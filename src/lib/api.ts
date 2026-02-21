@@ -125,6 +125,24 @@ export type BankAccount = {
   created_at: string;
 };
 
+export type YandexConnection = {
+  id: number;
+  provider: string;
+  external_account_id: string;
+  status: string;
+  config: Record<string, unknown>;
+  created_at: string;
+};
+
+export type YandexEvent = {
+  id: number;
+  external_id: string;
+  event_type: string;
+  payload: Record<string, unknown>;
+  processed: boolean;
+  created_at: string;
+};
+
 export async function register(input: {
   username: string;
   password: string;
@@ -229,4 +247,47 @@ export async function createInternalTransfer(input: {
     body: JSON.stringify(input),
     idempotent: true
   });
+}
+
+export async function connectYandex() {
+  return request<YandexConnection>("/api/integrations/yandex/connect/", {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+}
+
+export async function simulateYandexEvents(input: {
+  mode: "steady" | "spiky" | "adjustment" | "duplicates" | "out_of_order";
+  count: number;
+}) {
+  return request<{ connection_id: number; mode: string; requested_count: number; stored_count: number }>(
+    "/api/integrations/yandex/simulate-events/",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+      idempotent: true
+    }
+  );
+}
+
+export async function importYandexEvents() {
+  return request<{ imported_count: number; imported_total: string }>("/api/integrations/yandex/import/", {
+    method: "POST",
+    body: JSON.stringify({}),
+    idempotent: true
+  });
+}
+
+export async function reconcileYandex() {
+  return request<{
+    imported_events: number;
+    imported_total: string;
+    ledger_total: string;
+    delta: string;
+    status: "OK" | "MISMATCH";
+  }>("/api/integrations/yandex/reconcile/");
+}
+
+export async function yandexEvents() {
+  return request<YandexEvent[]>("/api/integrations/yandex/events/");
 }

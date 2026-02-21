@@ -7,33 +7,49 @@ type Props = {
 
 export default function LoginPage({ onAuthenticated }: Props) {
   const [fleetList, setFleetList] = useState<Fleet[]>([]);
-  const [fleetName, setFleetName] = useState("");
+  const [fleetQuery, setFleetQuery] = useState("");
+  const [selectedFleetName, setSelectedFleetName] = useState("");
   const [phone, setPhone] = useState("");
   const [challengeId, setChallengeId] = useState<number | null>(null);
   const [code, setCode] = useState("");
   const [debugCode, setDebugCode] = useState("");
   const [loading, setLoading] = useState(false);
+  const [fleetLoading, setFleetLoading] = useState(true);
+  const [fleetLoadError, setFleetLoadError] = useState("");
   const [error, setError] = useState("");
 
   useEffect(() => {
     void (async () => {
       try {
+        setFleetLoading(true);
+        setFleetLoadError("");
         const data = await fleets();
         setFleetList(data);
       } catch {
-        setError("Unable to load fleets.");
+        setFleetLoadError("Unable to load fleets right now.");
+      } finally {
+        setFleetLoading(false);
       }
     })();
   }, []);
 
-  const canRequestCode = useMemo(() => Boolean(fleetName.trim() && phone.trim()), [fleetName, phone]);
+  const filteredFleets = useMemo(() => {
+    const query = fleetQuery.trim().toLowerCase();
+    if (!query) return fleetList;
+    return fleetList.filter((fleet) => fleet.name.toLowerCase().includes(query));
+  }, [fleetList, fleetQuery]);
+
+  const canRequestCode = useMemo(
+    () => Boolean(selectedFleetName.trim() && phone.trim()),
+    [selectedFleetName, phone]
+  );
 
   async function handleRequestCode() {
     if (!canRequestCode) return;
     setLoading(true);
     setError("");
     try {
-      const data = await requestFleetCode({ fleet_name: fleetName.trim(), phone_number: phone.trim() });
+      const data = await requestFleetCode({ fleet_name: selectedFleetName.trim(), phone_number: phone.trim() });
       setChallengeId(data.challenge_id);
       setDebugCode(data.code ?? "");
     } catch (err) {
@@ -68,48 +84,79 @@ export default function LoginPage({ onAuthenticated }: Props) {
     <div className="loginPage">
       <section className="card loginCard">
         <h1 className="loginTitle">Login To Fleet</h1>
-        <p className="loginSubtitle">Choose your fleet, enter phone number, then verify with code.</p>
 
         <div className="transferForm">
           <label className="transferField">
-            <span className="transferLabel">Choose your fleet</span>
-            <span className="transferSelectWrap">
-              <select
-                className="transferInput"
-                value={fleetName}
-                onChange={(event) => setFleetName(event.target.value)}
-              >
-                <option value="">Select fleet</option>
-                {fleetList.map((fleet) => (
-                  <option key={fleet.id} value={fleet.name}>
-                    {fleet.name}
-                  </option>
-                ))}
-              </select>
-              <span className="transferChevron" aria-hidden="true">
-                <svg viewBox="0 0 24 24" width="20" height="20" fill="none">
-                  <path d="m6 9 6 6 6-6" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
-                </svg>
-              </span>
-            </span>
-          </label>
-
-          <label className="transferField">
-            <span className="transferLabel">Phone number</span>
+            <span className="transferLabel">Search fleet</span>
             <input
               className="transferInput"
-              type="tel"
-              placeholder="+995 5XX XX XX XX"
-              value={phone}
-              onChange={(event) => setPhone(event.target.value)}
+              type="text"
+              placeholder="Type fleet name"
+              value={fleetQuery}
+              onChange={(event) => setFleetQuery(event.target.value)}
             />
           </label>
 
-          {!challengeId ? (
+          <div className="fleetResults" role="listbox" aria-label="Fleet options">
+            {fleetLoading ? (
+              <p className="statusHint">Loading fleets...</p>
+            ) : fleetLoadError ? (
+              <p className="statusError">{fleetLoadError}</p>
+            ) : filteredFleets.length ? (
+              filteredFleets.slice(0, 8).map((fleet) => (
+                <button
+                  key={fleet.id}
+                  type="button"
+                  className={`fleetOption ${selectedFleetName === fleet.name ? "fleetOptionActive" : ""}`}
+                  onClick={() => {
+                    setSelectedFleetName(fleet.name);
+                    setChallengeId(null);
+                    setCode("");
+                    setDebugCode("");
+                    setError("");
+                  }}
+                >
+                  {fleet.name}
+                </button>
+              ))
+            ) : fleetQuery.trim() ? (
+              <p className="statusHint">No fleets found.</p>
+            ) : (
+              <p className="statusHint">Start typing to search fleets.</p>
+            )}
+          </div>
+
+          {selectedFleetName ? (
+            <>
+              <p className="statusHint">Selected fleet: {selectedFleetName}</p>
+              <label className="transferField">
+                <span className="transferLabel">Phone number</span>
+                <div className="phoneInputWrap">
+                  <span className="phonePrefix">+995</span>
+                  <input
+                    className="transferInput phoneInput"
+                    type="tel"
+                    inputMode="numeric"
+                    placeholder="598950001"
+                    value={phone}
+                    onChange={(event) => {
+                      let value = event.target.value.replace(/\D/g, "");
+                      if (value.startsWith("995")) value = value.slice(3);
+                      setPhone(value.slice(0, 9));
+                    }}
+                  />
+                </div>
+              </label>
+            </>
+          ) : null}
+
+          {!challengeId && selectedFleetName ? (
             <button className="transferSubmit" type="button" onClick={() => void handleRequestCode()}>
               {loading ? "Sending..." : "Receive code"}
             </button>
-          ) : (
+          ) : null}
+
+          {challengeId ? (
             <>
               <label className="transferField">
                 <span className="transferLabel">Code</span>
@@ -125,7 +172,7 @@ export default function LoginPage({ onAuthenticated }: Props) {
                 {loading ? "Verifying..." : "Login to fleet"}
               </button>
             </>
-          )}
+          ) : null}
 
           {debugCode ? <p className="statusHint">Test code: {debugCode}</p> : null}
           {error ? <p className="statusError">{error}</p> : null}

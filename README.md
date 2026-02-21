@@ -65,6 +65,11 @@ This uses PostgreSQL on `localhost:5433` with:
 - `GET /api/wallet/withdrawals/list/`
 - `PATCH /api/wallet/withdrawals/<id>/status/` (staff/admin flow)
 - `POST /api/transfers/internal/`
+- `POST /api/integrations/yandex/connect/`
+- `GET /api/integrations/yandex/events/`
+- `POST /api/integrations/yandex/simulate-events/`
+- `POST /api/integrations/yandex/import/`
+- `GET /api/integrations/yandex/reconcile/`
 
 ### Idempotency (money endpoints)
 For money-changing requests, include:
@@ -74,8 +79,18 @@ For money-changing requests, include:
 Applied to:
 - `POST /api/wallet/withdrawals/`
 - `POST /api/transfers/internal/`
+- `POST /api/integrations/yandex/simulate-events/`
+- `POST /api/integrations/yandex/import/`
 
 ### Fleet login demo data (seeded)
 - Fleet name: `New Tech`
 - Phone number: `+995555000111`
 - OTP code (dev): `123456`
+
+### Simulator tests
+Run integration tests (requires DB connection). If Postgres is not running locally, run tests with SQLite override:
+
+```bash
+cd backend
+DB_ENGINE=django.db.backends.sqlite3 DB_NAME=db.sqlite3 DB_USER='' DB_PASSWORD='' DB_HOST='' DB_PORT='' ../backend/.venv/bin/python manage.py test integrations -v 2
+```

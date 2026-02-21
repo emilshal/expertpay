@@ -207,11 +207,63 @@ body::after {
   margin: 0 0 8px;
   font-size: 32px;
   letter-spacing: -0.4px;
+  text-align: center;
 }
 
 .loginSubtitle {
-  margin: 0 0 16px;
+  margin: 0 0 22px;
   color: var(--text-1);
+}
+
+.fleetResults {
+  display: grid;
+  gap: 8px;
+}
+
+.fleetOption {
+  appearance: none;
+  border: 0;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font: inherit;
+  text-align: left;
+  color: var(--text-0);
+  background: rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+  transition: background 120ms ease, transform 120ms ease;
+}
+
+.fleetOption:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.fleetOption:active {
+  transform: translateY(1px);
+}
+
+.fleetOptionActive {
+  background: rgba(79, 175, 255, 0.25);
+  box-shadow: inset 0 0 0 1px rgba(112, 198, 255, 0.55);
+}
+
+.phoneInputWrap {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.phonePrefix {
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-0);
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
+.phoneInput {
+  min-width: 0;
 }
 
 .btn {
