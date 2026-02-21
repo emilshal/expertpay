@@ -6,6 +6,13 @@ from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from ledger.models import LedgerAccount
+from ledger.services import (
+    create_ledger_entry,
+    ensure_opening_entry,
+    get_account_balance,
+    get_or_create_user_ledger_account,
+)
 from .models import BankAccount, Transaction, Wallet, WithdrawalRequest
 from .serializers import (
     BankAccountSerializer,
@@ -21,6 +28,14 @@ class BalanceView(APIView):
 
     def get(self, request):
         wallet, _ = Wallet.objects.get_or_create(user=request.user)
+        ledger_account = get_or_create_user_ledger_account(request.user, wallet.currency)
+        ensure_opening_entry(ledger_account, wallet.balance, created_by=request.user)
+        ledger_balance = get_account_balance(ledger_account, wallet.currency)
+
+        if wallet.balance != ledger_balance:
+            wallet.balance = ledger_balance
+            wallet.save(update_fields=["balance", "updated_at"])
+
         return Response(WalletSerializer(wallet).data)
 
 
@@ -56,6 +71,8 @@ class WithdrawalCreateView(APIView):
         note = serializer.validated_data.get("note", "")
 
         wallet, _ = Wallet.objects.get_or_create(user=request.user)
+        ledger_account = get_or_create_user_ledger_account(request.user, wallet.currency)
+        ensure_opening_entry(ledger_account, wallet.balance, created_by=request.user)
         bank_account = BankAccount.objects.filter(
             id=bank_account_id, user=request.user, is_active=True
         ).first()
@@ -66,14 +83,26 @@ class WithdrawalCreateView(APIView):
         if amount <= Decimal("0"):
             return Response({"detail": "Amount must be greater than zero."}, status=status.HTTP_400_BAD_REQUEST)
 
-        if amount > wallet.balance:
-            return Response(
-                {"detail": "Insufficient wallet balance for this withdrawal."},
-                status=status.HTTP_400_BAD_REQUEST,
+        with db_transaction.atomic():
+            locked_ledger_account = LedgerAccount.objects.select_for_update().get(id=ledger_account.id)
+            current_balance = get_account_balance(locked_ledger_account, wallet.currency)
+
+            if amount > current_balance:
+                return Response(
+                    {"detail": "Insufficient wallet balance for this withdrawal."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            create_ledger_entry(
+                account=locked_ledger_account,
+                amount=-amount,
+                entry_type="withdrawal_hold",
+                created_by=request.user,
+                reference_type="withdrawal",
+                metadata={"bank_account_id": bank_account.id},
             )
 
-        with db_transaction.atomic():
-            wallet.balance = wallet.balance - amount
+            wallet.balance = current_balance - amount
             wallet.save(update_fields=["balance", "updated_at"])
 
             withdrawal = WithdrawalRequest.objects.create(
