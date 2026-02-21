@@ -39,7 +39,7 @@ cd backend
 ../backend/.venv/bin/python manage.py runserver
 ```
 
-This uses PostgreSQL on `localhost:5432` with:
+This uses PostgreSQL on `localhost:5433` with:
 - DB: `expertpay`
 - User: `expertpay`
 - Password: `expertpay`
@@ -54,3 +54,15 @@ This uses PostgreSQL on `localhost:5432` with:
 - `POST /api/wallet/bank-accounts/`
 - `GET /api/wallet/transactions/`
 - `POST /api/wallet/withdrawals/`
+- `GET /api/wallet/withdrawals/list/`
+- `PATCH /api/wallet/withdrawals/<id>/status/` (staff/admin flow)
+- `POST /api/transfers/internal/`
+
+### Idempotency (money endpoints)
+For money-changing requests, include:
+- `Idempotency-Key: <unique-value-per-request>`
+- `X-Request-ID: <optional-trace-id>`
+
+Applied to:
+- `POST /api/wallet/withdrawals/`
+- `POST /api/transfers/internal/`

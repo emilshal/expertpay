@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
-from .models import BankAccount, Transaction, Wallet, WithdrawalRequest
+from .models import BankAccount, Wallet, WithdrawalRequest
 
 
 class WalletSerializer(serializers.ModelSerializer):
@@ -18,10 +18,14 @@ class BankAccountSerializer(serializers.ModelSerializer):
         read_only_fields = ("id", "is_active", "created_at")
 
 
-class TransactionSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Transaction
-        fields = ("id", "kind", "amount", "currency", "status", "description", "created_at")
+class TransactionFeedSerializer(serializers.Serializer):
+    id = serializers.CharField()
+    kind = serializers.CharField()
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    currency = serializers.CharField(max_length=3)
+    status = serializers.CharField()
+    description = serializers.CharField(allow_blank=True)
+    created_at = serializers.DateTimeField()
 
 
 class WithdrawalCreateSerializer(serializers.Serializer):
@@ -36,3 +40,7 @@ class WithdrawalSerializer(serializers.ModelSerializer):
     class Meta:
         model = WithdrawalRequest
         fields = ("id", "amount", "currency", "status", "note", "bank_account", "created_at")
+
+
+class WithdrawalStatusUpdateSerializer(serializers.Serializer):
+    status = serializers.ChoiceField(choices=WithdrawalRequest.Status.choices)
