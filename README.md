@@ -11,6 +11,11 @@ npm install
 npm run dev
 ```
 
+Optional frontend API base:
+```bash
+VITE_API_BASE_URL=http://127.0.0.1:8000 npm run dev
+```
+
 ## Build
 ```bash
 npm run build
@@ -49,6 +54,9 @@ This uses PostgreSQL on `localhost:5433` with:
 - `POST /api/auth/login/`
 - `POST /api/auth/refresh/`
 - `GET /api/auth/me/`
+- `GET /api/auth/fleets/`
+- `POST /api/auth/request-code/`
+- `POST /api/auth/verify-code/`
 - `GET /api/wallet/balance/`
 - `GET /api/wallet/bank-accounts/`
 - `POST /api/wallet/bank-accounts/`
@@ -66,3 +74,8 @@ For money-changing requests, include:
 Applied to:
 - `POST /api/wallet/withdrawals/`
 - `POST /api/transfers/internal/`
+
+### Fleet login demo data (seeded)
+- Fleet name: `New Tech`
+- Phone number: `+995555000111`
+- OTP code (dev): `123456`

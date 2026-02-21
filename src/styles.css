@@ -143,6 +143,77 @@ body::after {
   padding: 0;
 }
 
+.authCard {
+  margin-bottom: 2px;
+}
+
+.authRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.authUser {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-0);
+}
+
+.authGrid {
+  display: grid;
+  gap: 10px;
+}
+
+.authTitle {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-0);
+}
+
+.authModeRow {
+  display: flex;
+  gap: 8px;
+}
+
+.authSubmit {
+  margin-top: 2px;
+}
+
+.statusError {
+  margin: 0;
+  color: #ff9ca7;
+  font-size: 13px;
+}
+
+.statusHint {
+  margin: 0;
+  color: #9ed9ff;
+  font-size: 12px;
+}
+
+.loginPage {
+  min-height: calc(100vh - 110px);
+  display: grid;
+  place-items: center;
+  padding: 12px 0 24px;
+}
+
+.loginCard {
+  width: min(100%, 560px);
+}
+
+.loginTitle {
+  margin: 0 0 8px;
+  font-size: 32px;
+  letter-spacing: -0.4px;
+}
+
+.loginSubtitle {
+  margin: 0 0 16px;
+  color: var(--text-1);
+}
+
 .btn {
   appearance: none;
   border: 0;

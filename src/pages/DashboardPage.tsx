@@ -1,17 +1,49 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  bankAccounts,
+  createBankAccount,
+  createInternalTransfer,
+  createWithdrawal,
+  walletBalance,
+  walletTransactions,
+  type BankAccount,
+  type TransactionFeedItem
+} from "../lib/api";
 
 export default function DashboardPage() {
   const [isBonusesOpen, setBonusesOpen] = useState(false);
   const [isTransferOpen, setTransferOpen] = useState(false);
   const [isWithdrawOpen, setWithdrawOpen] = useState(false);
   const [isRentOpen, setRentOpen] = useState(false);
-  const balanceGel = 0;
-  const transactions = [
-    { id: "t1", title: "Transfer to bank", subtitle: "Pending", amountGel: -120.5 },
-    { id: "t2", title: "Top up balance", subtitle: "Completed", amountGel: 250 },
-    { id: "t3", title: "Transfer to someone", subtitle: "Completed", amountGel: -35 },
-    { id: "t4", title: "Yandex payout", subtitle: "Completed", amountGel: 410.75 }
-  ];
+
+  const [balance, setBalance] = useState("0.00");
+  const [currency, setCurrency] = useState("GEL");
+  const [transactions, setTransactions] = useState<TransactionFeedItem[]>([]);
+  const [accounts, setAccounts] = useState<BankAccount[]>([]);
+  const [loadingData, setLoadingData] = useState(false);
+  const [dataError, setDataError] = useState("");
+
+  async function loadAppData() {
+    setLoadingData(true);
+    setDataError("");
+    try {
+      const [balanceRes, txRes, bankRes] = await Promise.all([walletBalance(), walletTransactions(), bankAccounts()]);
+      setBalance(balanceRes.balance);
+      setCurrency(balanceRes.currency);
+      setTransactions(txRes);
+      setAccounts(bankRes);
+    } catch {
+      setDataError("Unable to load data from backend.");
+    } finally {
+      setLoadingData(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadAppData();
+  }, []);
+
+  const formattedBalance = Number(balance || 0).toFixed(2);
 
   return (
     <div className="dashboard">
@@ -30,8 +62,11 @@ export default function DashboardPage() {
         <div className="balanceHeader">
           <div>
             <div className="muted">Your balance</div>
-            <div className="balanceValue">{balanceGel.toFixed(2)} GEL</div>
+            <div className="balanceValue">
+              {formattedBalance} {currency}
+            </div>
           </div>
+          {loadingData ? <div className="muted">Syncing...</div> : null}
         </div>
       </section>
 
@@ -57,31 +92,55 @@ export default function DashboardPage() {
       <section className="card">
         <div className="cardTitleRow">
           <h2 className="h2">Transaction history</h2>
-          <button className="btn btnGhost" type="button">
-            View all
+          <button className="btn btnGhost" type="button" onClick={() => void loadAppData()}>
+            Refresh
           </button>
         </div>
 
+        {dataError ? <p className="statusError">{dataError}</p> : null}
+
         <div className="txList" role="list">
           {transactions.map((tx) => (
-            <div key={tx.id} className="txRow" role="listitem">
-              <div className="txMain">
-                <div className="txTitle">{tx.title}</div>
-                <div className="txSub">{tx.subtitle}</div>
-              </div>
-              <div className={`txAmount ${tx.amountGel < 0 ? "neg" : "pos"}`}>
-                {tx.amountGel < 0 ? "-" : "+"}
-                {Math.abs(tx.amountGel).toFixed(2)} GEL
-              </div>
-            </div>
+            <TransactionRow key={tx.id} tx={tx} />
           ))}
+          {!transactions.length ? <p className="muted">No transactions yet.</p> : null}
         </div>
       </section>
 
       {isBonusesOpen ? <BonusesModal onClose={() => setBonusesOpen(false)} /> : null}
-      {isTransferOpen ? <TransferModal onClose={() => setTransferOpen(false)} /> : null}
-      {isWithdrawOpen ? <WithdrawModal onClose={() => setWithdrawOpen(false)} /> : null}
+      {isTransferOpen ? <TransferModal onClose={() => setTransferOpen(false)} onSuccess={loadAppData} /> : null}
+      {isWithdrawOpen ? (
+        <WithdrawModal
+          onClose={() => setWithdrawOpen(false)}
+          onSuccess={loadAppData}
+          bankAccounts={accounts}
+          setBankAccounts={setAccounts}
+        />
+      ) : null}
       {isRentOpen ? <RentModal onClose={() => setRentOpen(false)} /> : null}
+    </div>
+  );
+}
+
+function TransactionRow({ tx }: { tx: TransactionFeedItem }) {
+  const amountNum = Number(tx.amount);
+  const positive = amountNum > 0;
+  const title = useMemo(() => {
+    if (tx.kind === "withdrawal") return "Withdrawal";
+    if (tx.kind === "internal_transfer") return "Internal transfer";
+    return "Adjustment";
+  }, [tx.kind]);
+
+  return (
+    <div className="txRow" role="listitem">
+      <div className="txMain">
+        <div className="txTitle">{tx.description || title}</div>
+        <div className="txSub">{tx.status}</div>
+      </div>
+      <div className={`txAmount ${positive ? "pos" : "neg"}`}>
+        {positive ? "+" : "-"}
+        {Math.abs(amountNum).toFixed(2)} {tx.currency}
+      </div>
     </div>
   );
 }
@@ -161,7 +220,27 @@ function BonusesModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-function TransferModal({ onClose }: { onClose: () => void }) {
+function TransferModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => Promise<void> }) {
+  const [receiverUsername, setReceiverUsername] = useState("");
+  const [amount, setAmount] = useState("0.00");
+  const [note, setNote] = useState("Private transfer");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit() {
+    setLoading(true);
+    setError("");
+    try {
+      await createInternalTransfer({ receiver_username: receiverUsername, amount, note });
+      await onSuccess();
+      onClose();
+    } catch {
+      setError("Transfer failed. Check receiver username and amount.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <div className="bonusOverlay" role="presentation" onClick={onClose}>
       <section
@@ -177,54 +256,96 @@ function TransferModal({ onClose }: { onClose: () => void }) {
 
         <h2 className="transferTitle">Transfer</h2>
 
-        <form className="transferForm">
+        <form className="transferForm" onSubmit={(event) => event.preventDefault()}>
           <label className="transferField">
-            <span className="transferLabel">Choose bank</span>
-            <span className="transferSelectWrap">
-              <select className="transferInput transferInputAccent" defaultValue="">
-                <option value="" disabled>
-                  Select bank
-                </option>
-                <option value="bog">Bank of Georgia</option>
-                <option value="tbc">TBC Bank</option>
-                <option value="liberty">Liberty Bank</option>
-              </select>
-              <span className="transferChevron" aria-hidden="true">
-                <IconChevronDown />
-              </span>
-            </span>
-          </label>
-
-          <label className="transferField">
-            <span className="transferLabel">Account number</span>
-            <input className="transferInput" type="text" inputMode="numeric" placeholder="GE00 TB00 0000" />
-          </label>
-
-          <label className="transferField">
-            <span className="transferLabel">Beneficiary name</span>
-            <input className="transferInput" type="text" placeholder="Full name" />
+            <span className="transferLabel">Receiver username</span>
+            <input
+              className="transferInput"
+              type="text"
+              placeholder="username"
+              value={receiverUsername}
+              onChange={(event) => setReceiverUsername(event.target.value)}
+            />
           </label>
 
           <label className="transferField">
             <span className="transferLabel">Amount</span>
-            <input className="transferInput" type="text" defaultValue="0.1489" />
+            <input
+              className="transferInput"
+              type="text"
+              value={amount}
+              onChange={(event) => setAmount(event.target.value)}
+            />
           </label>
 
           <label className="transferField">
             <span className="transferLabel">Nomination</span>
-            <input className="transferInput" type="text" defaultValue="Private transfer" />
+            <input
+              className="transferInput"
+              type="text"
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+            />
           </label>
 
-          <button className="transferSubmit" type="button">
-            Transfer
+          <button className="transferSubmit" type="button" onClick={() => void submit()}>
+            {loading ? "Please wait..." : "Transfer"}
           </button>
+          {error ? <p className="statusError">{error}</p> : null}
         </form>
       </section>
     </div>
   );
 }
 
-function WithdrawModal({ onClose }: { onClose: () => void }) {
+function WithdrawModal({
+  onClose,
+  onSuccess,
+  bankAccounts,
+  setBankAccounts
+}: {
+  onClose: () => void;
+  onSuccess: () => Promise<void>;
+  bankAccounts: BankAccount[];
+  setBankAccounts: (value: BankAccount[]) => void;
+}) {
+  const [selectedBankAccountId, setSelectedBankAccountId] = useState<number | "new">(
+    bankAccounts[0]?.id ?? "new"
+  );
+  const [bankName, setBankName] = useState("");
+  const [accountNumber, setAccountNumber] = useState("");
+  const [beneficiaryName, setBeneficiaryName] = useState("");
+  const [amount, setAmount] = useState("0.00");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit() {
+    setLoading(true);
+    setError("");
+    try {
+      let bankId: number;
+      if (selectedBankAccountId === "new") {
+        const newAccount = await createBankAccount({
+          bank_name: bankName,
+          account_number: accountNumber,
+          beneficiary_name: beneficiaryName
+        });
+        bankId = newAccount.id;
+        setBankAccounts([newAccount, ...bankAccounts]);
+      } else {
+        bankId = selectedBankAccountId;
+      }
+
+      await createWithdrawal({ bank_account_id: bankId, amount });
+      await onSuccess();
+      onClose();
+    } catch {
+      setError("Withdrawal failed. Check account details and amount.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <div className="bonusOverlay" role="presentation" onClick={onClose}>
       <section
@@ -240,17 +361,25 @@ function WithdrawModal({ onClose }: { onClose: () => void }) {
 
         <h2 className="transferTitle">Withdraw</h2>
 
-        <form className="transferForm">
+        <form className="transferForm" onSubmit={(event) => event.preventDefault()}>
           <label className="transferField">
-            <span className="transferLabel">Choose bank</span>
+            <span className="transferLabel">Choose bank account</span>
             <span className="transferSelectWrap">
-              <select className="transferInput" defaultValue="">
-                <option value="" disabled>
-                  Select bank
-                </option>
-                <option value="bog">Bank of Georgia</option>
-                <option value="tbc">TBC Bank</option>
-                <option value="liberty">Liberty Bank</option>
+              <select
+                className="transferInput"
+                value={String(selectedBankAccountId)}
+                onChange={(event) =>
+                  setSelectedBankAccountId(
+                    event.target.value === "new" ? "new" : Number(event.target.value)
+                  )
+                }
+              >
+                {bankAccounts.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.bank_name} • {item.account_number}
+                  </option>
+                ))}
+                <option value="new">Add new bank account</option>
               </select>
               <span className="transferChevron" aria-hidden="true">
                 <IconChevronDown />
@@ -258,24 +387,58 @@ function WithdrawModal({ onClose }: { onClose: () => void }) {
             </span>
           </label>
 
-          <label className="transferField">
-            <span className="transferLabel">Account number</span>
-            <input className="transferInput" type="text" inputMode="numeric" placeholder="GE00 TB00 0000" />
-          </label>
+          {selectedBankAccountId === "new" ? (
+            <>
+              <label className="transferField">
+                <span className="transferLabel">Bank name</span>
+                <input
+                  className="transferInput"
+                  type="text"
+                  placeholder="Bank of Georgia"
+                  value={bankName}
+                  onChange={(event) => setBankName(event.target.value)}
+                />
+              </label>
 
-          <label className="transferField">
-            <span className="transferLabel">Beneficiary name</span>
-            <input className="transferInput" type="text" defaultValue="levani bagashvili" />
-          </label>
+              <label className="transferField">
+                <span className="transferLabel">Account number</span>
+                <input
+                  className="transferInput"
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="GE00 TB00 0000"
+                  value={accountNumber}
+                  onChange={(event) => setAccountNumber(event.target.value)}
+                />
+              </label>
+
+              <label className="transferField">
+                <span className="transferLabel">Beneficiary name</span>
+                <input
+                  className="transferInput"
+                  type="text"
+                  placeholder="Full name"
+                  value={beneficiaryName}
+                  onChange={(event) => setBeneficiaryName(event.target.value)}
+                />
+              </label>
+            </>
+          ) : null}
 
           <label className="transferField">
             <span className="transferLabel">Amount</span>
-            <input className="transferInput" type="text" defaultValue="0.1489" />
+            <input
+              className="transferInput"
+              type="text"
+              value={amount}
+              onChange={(event) => setAmount(event.target.value)}
+            />
           </label>
 
-          <button className="transferSubmit" type="button">
-            Withdrawal
+          <button className="transferSubmit" type="button" onClick={() => void submit()}>
+            {loading ? "Please wait..." : "Withdrawal"}
           </button>
+          {error ? <p className="statusError">{error}</p> : null}
         </form>
       </section>
     </div>
@@ -302,12 +465,7 @@ function RentModal({ onClose }: { onClose: () => void }) {
           taxi.
         </p>
 
-        <a
-          className="transferSubmit rentSubmit"
-          href="https://taxio.ge/"
-          target="_blank"
-          rel="noreferrer"
-        >
+        <a className="transferSubmit rentSubmit" href="https://taxio.ge/" target="_blank" rel="noreferrer">
           View cars
         </a>
       </section>
@@ -455,12 +613,7 @@ function IconReferral() {
         strokeWidth="1.8"
         strokeLinecap="round"
       />
-      <path
-        d="M9.8 12h4.4"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
+      <path d="M9.8 12h4.4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
     </svg>
   );
 }
