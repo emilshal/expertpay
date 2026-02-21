@@ -1,11 +1,15 @@
 from django.urls import path
 
 from .views import (
+    ConnectBankSimulatorView,
     ConnectYandexView,
     ImportYandexEventsView,
+    ListBankSimulatorPayoutsView,
     ListYandexEventsView,
     ReconcileYandexView,
     SimulateYandexEventsView,
+    SubmitBankSimulatorPayoutView,
+    UpdateBankSimulatorPayoutStatusView,
 )
 
 
@@ -15,4 +19,12 @@ urlpatterns = [
     path("yandex/simulate-events/", SimulateYandexEventsView.as_view(), name="yandex-simulate"),
     path("yandex/import/", ImportYandexEventsView.as_view(), name="yandex-import"),
     path("yandex/reconcile/", ReconcileYandexView.as_view(), name="yandex-reconcile"),
+    path("bank-sim/connect/", ConnectBankSimulatorView.as_view(), name="bank-sim-connect"),
+    path("bank-sim/payouts/", ListBankSimulatorPayoutsView.as_view(), name="bank-sim-payouts"),
+    path("bank-sim/payouts/submit/", SubmitBankSimulatorPayoutView.as_view(), name="bank-sim-submit"),
+    path(
+        "bank-sim/payouts/<int:payout_id>/status/",
+        UpdateBankSimulatorPayoutStatusView.as_view(),
+        name="bank-sim-status-update",
+    ),
 ]

@@ -6,9 +6,9 @@ from django.db import transaction
 from django.utils import timezone
 
 from ledger.services import create_ledger_entry, ensure_opening_entry, get_or_create_user_ledger_account
-from wallet.models import Wallet
+from wallet.models import Wallet, WithdrawalRequest
 
-from .models import ExternalEvent, ProviderConnection
+from .models import BankSimulatorPayout, ExternalEvent, ProviderConnection
 
 
 def _event_amount_for_mode(mode: str) -> Decimal:
@@ -116,3 +116,88 @@ def reconciliation_summary(*, connection: ProviderConnection):
         "delta": str(delta),
         "status": "OK" if delta == Decimal("0.00") else "MISMATCH",
     }
+
+
+def submit_withdrawal_to_bank_simulator(*, connection: ProviderConnection, withdrawal: WithdrawalRequest):
+    payout, created = BankSimulatorPayout.objects.get_or_create(
+        withdrawal=withdrawal,
+        defaults={
+            "connection": connection,
+            "provider_payout_id": f"banksim-{connection.id}-{withdrawal.id}",
+            "status": BankSimulatorPayout.Status.ACCEPTED,
+            "metadata": {"source": "bank_simulator"},
+        },
+    )
+
+    # Ensure payout is bound to the same owner connection.
+    if payout.connection_id != connection.id:
+        raise ValueError("Withdrawal payout belongs to another simulator connection.")
+
+    if withdrawal.status == WithdrawalRequest.Status.PENDING:
+        withdrawal.status = WithdrawalRequest.Status.PROCESSING
+        withdrawal.save(update_fields=["status"])
+
+    return payout, created
+
+
+def apply_bank_simulator_status_update(*, payout: BankSimulatorPayout, target_status: str, failure_reason: str = ""):
+    with transaction.atomic():
+        locked_payout = BankSimulatorPayout.objects.select_for_update().select_related(
+            "withdrawal", "withdrawal__wallet", "withdrawal__wallet__user"
+        ).get(id=payout.id)
+
+        withdrawal = locked_payout.withdrawal
+        if withdrawal.status == WithdrawalRequest.Status.COMPLETED and target_status in {
+            BankSimulatorPayout.Status.FAILED,
+            BankSimulatorPayout.Status.REVERSED,
+        }:
+            raise ValueError("Cannot fail or reverse a completed payout.")
+
+        if locked_payout.status == target_status:
+            return locked_payout
+
+        locked_payout.status = target_status
+        locked_payout.failure_reason = failure_reason
+        locked_payout.save(update_fields=["status", "failure_reason", "updated_at"])
+
+        if target_status in {
+            BankSimulatorPayout.Status.ACCEPTED,
+            BankSimulatorPayout.Status.PROCESSING,
+        }:
+            if withdrawal.status not in {
+                WithdrawalRequest.Status.COMPLETED,
+                WithdrawalRequest.Status.FAILED,
+            }:
+                withdrawal.status = WithdrawalRequest.Status.PROCESSING
+                withdrawal.save(update_fields=["status"])
+            return locked_payout
+
+        if target_status == BankSimulatorPayout.Status.SETTLED:
+            withdrawal.status = WithdrawalRequest.Status.COMPLETED
+            withdrawal.save(update_fields=["status"])
+            return locked_payout
+
+        if target_status in {BankSimulatorPayout.Status.FAILED, BankSimulatorPayout.Status.REVERSED}:
+            if withdrawal.status != WithdrawalRequest.Status.FAILED:
+                wallet = withdrawal.wallet
+                ledger_account = get_or_create_user_ledger_account(wallet.user, wallet.currency)
+                create_ledger_entry(
+                    account=ledger_account,
+                    amount=withdrawal.amount,
+                    entry_type="withdrawal_reversal",
+                    created_by=wallet.user,
+                    reference_type="withdrawal",
+                    reference_id=str(withdrawal.id),
+                    metadata={
+                        "description": "Bank simulator marked payout failed/reversed",
+                        "provider_payout_id": locked_payout.provider_payout_id,
+                    },
+                    idempotency_key=f"banksim:reversal:{locked_payout.id}",
+                )
+                wallet.balance = wallet.balance + withdrawal.amount
+                wallet.save(update_fields=["balance", "updated_at"])
+                withdrawal.status = WithdrawalRequest.Status.FAILED
+                withdrawal.save(update_fields=["status"])
+            return locked_payout
+
+        return locked_payout

@@ -70,6 +70,10 @@ This uses PostgreSQL on `localhost:5433` with:
 - `POST /api/integrations/yandex/simulate-events/`
 - `POST /api/integrations/yandex/import/`
 - `GET /api/integrations/yandex/reconcile/`
+- `POST /api/integrations/bank-sim/connect/`
+- `GET /api/integrations/bank-sim/payouts/`
+- `POST /api/integrations/bank-sim/payouts/submit/`
+- `POST /api/integrations/bank-sim/payouts/<id>/status/`
 
 ### Idempotency (money endpoints)
 For money-changing requests, include:

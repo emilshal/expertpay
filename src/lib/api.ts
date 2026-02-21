@@ -125,6 +125,16 @@ export type BankAccount = {
   created_at: string;
 };
 
+export type WithdrawalItem = {
+  id: number;
+  amount: string;
+  currency: string;
+  status: "pending" | "processing" | "completed" | "failed";
+  note: string;
+  bank_account: BankAccount;
+  created_at: string;
+};
+
 export type YandexConnection = {
   id: number;
   provider: string;
@@ -141,6 +151,17 @@ export type YandexEvent = {
   payload: Record<string, unknown>;
   processed: boolean;
   created_at: string;
+};
+
+export type BankSimPayout = {
+  id: number;
+  withdrawal_id: number;
+  provider_payout_id: string;
+  status: "accepted" | "processing" | "settled" | "failed" | "reversed";
+  failure_reason: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
 };
 
 export async function register(input: {
@@ -237,6 +258,10 @@ export async function createWithdrawal(input: { bank_account_id: number; amount:
   });
 }
 
+export async function withdrawalsList() {
+  return request<WithdrawalItem[]>("/api/wallet/withdrawals/list/");
+}
+
 export async function createInternalTransfer(input: {
   receiver_username: string;
   amount: string;
@@ -290,4 +315,34 @@ export async function reconcileYandex() {
 
 export async function yandexEvents() {
   return request<YandexEvent[]>("/api/integrations/yandex/events/");
+}
+
+export async function connectBankSimulator() {
+  return request<Json>("/api/integrations/bank-sim/connect/", {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+}
+
+export async function bankSimulatorPayouts() {
+  return request<BankSimPayout[]>("/api/integrations/bank-sim/payouts/");
+}
+
+export async function submitBankSimulatorPayout(withdrawal_id: number) {
+  return request<BankSimPayout>("/api/integrations/bank-sim/payouts/submit/", {
+    method: "POST",
+    body: JSON.stringify({ withdrawal_id }),
+    idempotent: true
+  });
+}
+
+export async function updateBankSimulatorPayoutStatus(
+  payout_id: number,
+  input: { status: "accepted" | "processing" | "settled" | "failed" | "reversed"; failure_reason?: string }
+) {
+  return request<BankSimPayout>(`/api/integrations/bank-sim/payouts/${payout_id}/status/`, {
+    method: "POST",
+    body: JSON.stringify(input),
+    idempotent: true
+  });
 }
