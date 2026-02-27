@@ -3,9 +3,15 @@ import random
 from datetime import timedelta
 
 from django.db import transaction
+from django.db.models import Sum
 from django.utils import timezone
 
-from ledger.services import create_ledger_entry, ensure_opening_entry, get_or_create_user_ledger_account
+from ledger.services import (
+    create_ledger_entry,
+    ensure_opening_entry,
+    get_account_balance,
+    get_or_create_user_ledger_account,
+)
 from wallet.models import Wallet, WithdrawalRequest
 
 from .models import BankSimulatorPayout, ExternalEvent, ProviderConnection
@@ -201,3 +207,83 @@ def apply_bank_simulator_status_update(*, payout: BankSimulatorPayout, target_st
             return locked_payout
 
         return locked_payout
+
+
+def build_reconciliation_report(*, user):
+    wallet, _ = Wallet.objects.get_or_create(user=user)
+    ledger_account = get_or_create_user_ledger_account(user, wallet.currency)
+    ensure_opening_entry(ledger_account, wallet.balance, created_by=user)
+    ledger_balance = get_account_balance(ledger_account, wallet.currency)
+
+    yandex_connection = ProviderConnection.objects.filter(
+        user=user, provider=ProviderConnection.Provider.YANDEX
+    ).first()
+    if yandex_connection:
+        yandex = reconciliation_summary(connection=yandex_connection)
+    else:
+        yandex = {
+            "imported_events": 0,
+            "imported_total": "0.00",
+            "ledger_total": "0.00",
+            "delta": "0.00",
+            "status": "OK",
+        }
+
+    withdrawals = WithdrawalRequest.objects.filter(user=user)
+    withdrawals_total = withdrawals.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+    withdrawals_completed = (
+        withdrawals.filter(status=WithdrawalRequest.Status.COMPLETED).aggregate(total=Sum("amount"))["total"]
+        or Decimal("0.00")
+    )
+    withdrawals_pending = (
+        withdrawals.filter(status__in=[WithdrawalRequest.Status.PENDING, WithdrawalRequest.Status.PROCESSING]).aggregate(
+            total=Sum("amount")
+        )["total"]
+        or Decimal("0.00")
+    )
+    withdrawals_failed = (
+        withdrawals.filter(status=WithdrawalRequest.Status.FAILED).aggregate(total=Sum("amount"))["total"]
+        or Decimal("0.00")
+    )
+
+    payouts = BankSimulatorPayout.objects.filter(withdrawal__user=user)
+    payouts_by_status = {
+        status_key: str(
+            payouts.filter(status=status_key).aggregate(total=Sum("withdrawal__amount"))["total"] or Decimal("0.00")
+        )
+        for status_key in [
+            BankSimulatorPayout.Status.ACCEPTED,
+            BankSimulatorPayout.Status.PROCESSING,
+            BankSimulatorPayout.Status.SETTLED,
+            BankSimulatorPayout.Status.FAILED,
+            BankSimulatorPayout.Status.REVERSED,
+        ]
+    }
+
+    wallet_delta = ledger_balance - wallet.balance
+
+    return {
+        "currency": wallet.currency,
+        "wallet": {
+            "wallet_balance": str(wallet.balance),
+            "ledger_balance": str(ledger_balance),
+            "delta": str(wallet_delta),
+            "status": "OK" if wallet_delta == Decimal("0.00") else "MISMATCH",
+        },
+        "yandex": yandex,
+        "withdrawals": {
+            "count": withdrawals.count(),
+            "total": str(withdrawals_total),
+            "completed_total": str(withdrawals_completed),
+            "pending_total": str(withdrawals_pending),
+            "failed_total": str(withdrawals_failed),
+        },
+        "bank_simulator": {
+            "count": payouts.count(),
+            "totals_by_status": payouts_by_status,
+        },
+        "generated_at": timezone.now().isoformat(),
+        "overall_status": "OK"
+        if wallet_delta == Decimal("0.00") and yandex.get("status") == "OK"
+        else "MISMATCH",
+    }

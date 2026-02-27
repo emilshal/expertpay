@@ -1,19 +1,51 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   bankAccounts,
   createBankAccount,
-  createInternalTransfer,
+  createInternalTransferByBank,
   createWithdrawal,
+  topUpWallet,
   walletBalance,
   walletTransactions,
   type BankAccount,
   type TransactionFeedItem
 } from "../lib/api";
 
+function formatApiError(
+  error: unknown,
+  fieldLabels: Record<string, string> = {}
+) {
+  const fallback = "Request failed.";
+  if (!(error instanceof Error)) return fallback;
+
+  const raw = error.message?.trim();
+  if (!raw) return fallback;
+
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (typeof parsed.detail === "string") return parsed.detail;
+
+    const parts: string[] = [];
+    for (const [key, value] of Object.entries(parsed)) {
+      const label = fieldLabels[key] ?? key.replace(/_/g, " ");
+      if (Array.isArray(value) && value.length) {
+        parts.push(`${label}: ${String(value[0])}`);
+      } else if (typeof value === "string") {
+        parts.push(`${label}: ${value}`);
+      }
+    }
+
+    return parts.join(" | ") || raw;
+  } catch {
+    return raw;
+  }
+}
+
 export default function DashboardPage() {
   const [isBonusesOpen, setBonusesOpen] = useState(false);
   const [isTransferOpen, setTransferOpen] = useState(false);
   const [isWithdrawOpen, setWithdrawOpen] = useState(false);
+  const [isTopUpOpen, setTopUpOpen] = useState(false);
   const [isRentOpen, setRentOpen] = useState(false);
 
   const [balance, setBalance] = useState("0.00");
@@ -73,7 +105,7 @@ export default function DashboardPage() {
       <section className="card cardTransparent">
         <div className="actionRow" aria-label="Actions">
           <IconButton
-            label="Transfer money"
+            label="Withdraw money"
             variant="soft"
             icon={<IconSend />}
             onClick={() => setWithdrawOpen(true)}
@@ -84,7 +116,12 @@ export default function DashboardPage() {
             icon={<IconUsers />}
             onClick={() => setTransferOpen(true)}
           />
-          <IconButton label="Fill up balance" variant="soft" icon={<IconPlus />} />
+          <IconButton
+            label="Fill up balance"
+            variant="soft"
+            icon={<IconPlus />}
+            onClick={() => setTopUpOpen(true)}
+          />
           <IconButton label="Video tariffs" variant="soft" icon={<IconPlay />} />
         </div>
       </section>
@@ -117,6 +154,7 @@ export default function DashboardPage() {
           setBankAccounts={setAccounts}
         />
       ) : null}
+      {isTopUpOpen ? <TopUpModal onClose={() => setTopUpOpen(false)} onSuccess={loadAppData} /> : null}
       {isRentOpen ? <RentModal onClose={() => setRentOpen(false)} /> : null}
     </div>
   );
@@ -221,8 +259,10 @@ function BonusesModal({ onClose }: { onClose: () => void }) {
 }
 
 function TransferModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => Promise<void> }) {
-  const [receiverUsername, setReceiverUsername] = useState("");
-  const [amount, setAmount] = useState("0.00");
+  const [bankName, setBankName] = useState("");
+  const [accountNumber, setAccountNumber] = useState("");
+  const [beneficiaryName, setBeneficiaryName] = useState("");
+  const [amount, setAmount] = useState("0.1489");
   const [note, setNote] = useState("Private transfer");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -231,11 +271,25 @@ function TransferModal({ onClose, onSuccess }: { onClose: () => void; onSuccess:
     setLoading(true);
     setError("");
     try {
-      await createInternalTransfer({ receiver_username: receiverUsername, amount, note });
+      await createInternalTransferByBank({
+        bank_name: bankName,
+        account_number: accountNumber,
+        beneficiary_name: beneficiaryName,
+        amount,
+        note
+      });
       await onSuccess();
       onClose();
-    } catch {
-      setError("Transfer failed. Check receiver username and amount.");
+    } catch (err) {
+      setError(
+        formatApiError(err, {
+          bank_name: "Choose bank",
+          account_number: "Account number",
+          beneficiary_name: "Beneficiary name",
+          amount: "Amount",
+          note: "Nomination"
+        })
+      );
     } finally {
       setLoading(false);
     }
@@ -258,13 +312,35 @@ function TransferModal({ onClose, onSuccess }: { onClose: () => void; onSuccess:
 
         <form className="transferForm" onSubmit={(event) => event.preventDefault()}>
           <label className="transferField">
-            <span className="transferLabel">Receiver username</span>
+            <span className="transferLabel">Choose bank</span>
+            <CustomDropdown
+              value={bankName}
+              placeholder="Select bank"
+              options={[
+                { value: "TBC", label: "TBC" },
+                { value: "Bank of Georgia", label: "Bank of Georgia" }
+              ]}
+              onChange={(value) => setBankName(value)}
+            />
+          </label>
+
+          <label className="transferField">
+            <span className="transferLabel">Account number</span>
             <input
               className="transferInput"
               type="text"
-              placeholder="username"
-              value={receiverUsername}
-              onChange={(event) => setReceiverUsername(event.target.value)}
+              value={accountNumber}
+              onChange={(event) => setAccountNumber(event.target.value)}
+            />
+          </label>
+
+          <label className="transferField">
+            <span className="transferLabel">Beneficiary name</span>
+            <input
+              className="transferInput"
+              type="text"
+              value={beneficiaryName}
+              onChange={(event) => setBeneficiaryName(event.target.value)}
             />
           </label>
 
@@ -318,6 +394,10 @@ function WithdrawModal({
   const [amount, setAmount] = useState("0.00");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const bankAccountOptions = bankAccounts.map((item) => ({
+    value: String(item.id),
+    label: `${item.bank_name} • ${item.account_number}`
+  }));
 
   async function submit() {
     setLoading(true);
@@ -339,8 +419,17 @@ function WithdrawModal({
       await createWithdrawal({ bank_account_id: bankId, amount });
       await onSuccess();
       onClose();
-    } catch {
-      setError("Withdrawal failed. Check account details and amount.");
+    } catch (err) {
+      setError(
+        formatApiError(err, {
+          bank_name: "Bank name",
+          account_number: "Account number",
+          beneficiary_name: "Beneficiary name",
+          bank_account_id: "Bank account",
+          amount: "Amount",
+          note: "Note"
+        })
+      );
     } finally {
       setLoading(false);
     }
@@ -364,39 +453,25 @@ function WithdrawModal({
         <form className="transferForm" onSubmit={(event) => event.preventDefault()}>
           <label className="transferField">
             <span className="transferLabel">Choose bank account</span>
-            <span className="transferSelectWrap">
-              <select
-                className="transferInput"
-                value={String(selectedBankAccountId)}
-                onChange={(event) =>
-                  setSelectedBankAccountId(
-                    event.target.value === "new" ? "new" : Number(event.target.value)
-                  )
-                }
-              >
-                {bankAccounts.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.bank_name} • {item.account_number}
-                  </option>
-                ))}
-                <option value="new">Add new bank account</option>
-              </select>
-              <span className="transferChevron" aria-hidden="true">
-                <IconChevronDown />
-              </span>
-            </span>
+            <CustomDropdown
+              value={String(selectedBankAccountId)}
+              options={[...bankAccountOptions, { value: "new", label: "Add new bank account" }]}
+              onChange={(value) => setSelectedBankAccountId(value === "new" ? "new" : Number(value))}
+            />
           </label>
 
           {selectedBankAccountId === "new" ? (
             <>
               <label className="transferField">
                 <span className="transferLabel">Bank name</span>
-                <input
-                  className="transferInput"
-                  type="text"
-                  placeholder="Bank of Georgia"
+                <CustomDropdown
                   value={bankName}
-                  onChange={(event) => setBankName(event.target.value)}
+                  placeholder="Select bank"
+                  options={[
+                    { value: "TBC", label: "TBC" },
+                    { value: "Bank of Georgia", label: "Bank of Georgia" }
+                  ]}
+                  onChange={(value) => setBankName(value)}
                 />
               </label>
 
@@ -469,6 +544,141 @@ function RentModal({ onClose }: { onClose: () => void }) {
           View cars
         </a>
       </section>
+    </div>
+  );
+}
+
+function TopUpModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => Promise<void> }) {
+  const [amount, setAmount] = useState("50.00");
+  const [note, setNote] = useState("Sandbox top-up");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit() {
+    setLoading(true);
+    setError("");
+    try {
+      await topUpWallet({ amount, note });
+      await onSuccess();
+      onClose();
+    } catch {
+      setError("Top-up failed. Check amount.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="bonusOverlay" role="presentation" onClick={onClose}>
+      <section
+        className="transferModal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Fill up balance"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <button className="bonusClose" type="button" aria-label="Close top-up" onClick={onClose}>
+          <IconClose />
+        </button>
+
+        <h2 className="transferTitle">Fill up balance</h2>
+
+        <form className="transferForm" onSubmit={(event) => event.preventDefault()}>
+          <label className="transferField">
+            <span className="transferLabel">Amount</span>
+            <input
+              className="transferInput"
+              type="text"
+              value={amount}
+              onChange={(event) => setAmount(event.target.value)}
+            />
+          </label>
+
+          <label className="transferField">
+            <span className="transferLabel">Note</span>
+            <input
+              className="transferInput"
+              type="text"
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+            />
+          </label>
+
+          <button className="transferSubmit" type="button" onClick={() => void submit()}>
+            {loading ? "Please wait..." : "Top up"}
+          </button>
+          {error ? <p className="statusError">{error}</p> : null}
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function CustomDropdown({
+  value,
+  options,
+  onChange,
+  placeholder = "Select"
+}: {
+  value: string;
+  options: Array<{ value: string; label: string }>;
+  onChange: (value: string) => void;
+  placeholder?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const selected = options.find((item) => item.value === value);
+
+  useEffect(() => {
+    function handleOutside(event: MouseEvent) {
+      if (!rootRef.current) return;
+      if (!rootRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    }
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", handleOutside);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("mousedown", handleOutside);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, []);
+
+  return (
+    <div className="customSelect" ref={rootRef}>
+      <button
+        className="transferInput customSelectButton"
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+      >
+        <span>{selected?.label ?? placeholder}</span>
+        <span className="transferChevron customSelectChevron" aria-hidden="true">
+          <IconChevronDown />
+        </span>
+      </button>
+
+      {open ? (
+        <div className="customSelectMenu" role="listbox">
+          {options.map((item) => (
+            <button
+              key={item.value}
+              className={`customSelectOption ${item.value === value ? "customSelectOptionActive" : ""}`}
+              type="button"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onChange(item.value);
+                setOpen(false);
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

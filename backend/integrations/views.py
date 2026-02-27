@@ -15,6 +15,7 @@ from .serializers import (
     UpdateBankPayoutStatusSerializer,
 )
 from .services import (
+    build_reconciliation_report,
     apply_bank_simulator_status_update,
     generate_simulated_events,
     import_unprocessed_events,
@@ -168,3 +169,10 @@ class UpdateBankSimulatorPayoutStatusView(APIView):
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response(BankSimulatorPayoutSerializer(payout).data, status=status.HTTP_200_OK)
+
+
+class ReconciliationSummaryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(build_reconciliation_report(user=request.user), status=status.HTTP_200_OK)

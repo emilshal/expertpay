@@ -164,6 +164,36 @@ export type BankSimPayout = {
   updated_at: string;
 };
 
+export type ReconciliationSummary = {
+  currency: string;
+  wallet: {
+    wallet_balance: string;
+    ledger_balance: string;
+    delta: string;
+    status: "OK" | "MISMATCH";
+  };
+  yandex: {
+    imported_events: number;
+    imported_total: string;
+    ledger_total: string;
+    delta: string;
+    status: "OK" | "MISMATCH";
+  };
+  withdrawals: {
+    count: number;
+    total: string;
+    completed_total: string;
+    pending_total: string;
+    failed_total: string;
+  };
+  bank_simulator: {
+    count: number;
+    totals_by_status: Record<string, string>;
+  };
+  generated_at: string;
+  overall_status: "OK" | "MISMATCH";
+};
+
 export async function register(input: {
   username: string;
   password: string;
@@ -258,6 +288,14 @@ export async function createWithdrawal(input: { bank_account_id: number; amount:
   });
 }
 
+export async function topUpWallet(input: { amount: string; note?: string }) {
+  return request<{ balance: string; currency: string; credited_amount: string }>("/api/wallet/top-up/", {
+    method: "POST",
+    body: JSON.stringify(input),
+    idempotent: true
+  });
+}
+
 export async function withdrawalsList() {
   return request<WithdrawalItem[]>("/api/wallet/withdrawals/list/");
 }
@@ -268,6 +306,20 @@ export async function createInternalTransfer(input: {
   note?: string;
 }) {
   return request<Json>("/api/transfers/internal/", {
+    method: "POST",
+    body: JSON.stringify(input),
+    idempotent: true
+  });
+}
+
+export async function createInternalTransferByBank(input: {
+  bank_name: string;
+  account_number: string;
+  beneficiary_name: string;
+  amount: string;
+  note?: string;
+}) {
+  return request<Json>("/api/transfers/internal/by-bank/", {
     method: "POST",
     body: JSON.stringify(input),
     idempotent: true
@@ -345,4 +397,8 @@ export async function updateBankSimulatorPayoutStatus(
     body: JSON.stringify(input),
     idempotent: true
   });
+}
+
+export async function reconciliationSummary() {
+  return request<ReconciliationSummary>("/api/integrations/reconciliation/summary/");
 }

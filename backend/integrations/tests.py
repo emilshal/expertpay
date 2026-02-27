@@ -188,3 +188,23 @@ class BankSimulatorApiTests(APITestCase):
         self.assertEqual(len(list_response.data), 1)
         self.assertEqual(list_response.data[0]["withdrawal_id"], withdrawal_id)
         self.assertEqual(BankSimulatorPayout.objects.count(), 1)
+
+    def test_reconciliation_summary_endpoint_returns_aggregate_report(self):
+        withdrawal_id = self._create_withdrawal(amount="15.00")
+        payout = self.client.post(reverse("bank-sim-submit"), data={"withdrawal_id": withdrawal_id}, format="json")
+        payout_id = payout.data["id"]
+        self.client.post(
+            reverse("bank-sim-status-update", kwargs={"payout_id": payout_id}),
+            data={"status": "settled"},
+            format="json",
+        )
+
+        response = self.client.get(reverse("reconciliation-summary"))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["currency"], "GEL")
+        self.assertIn("wallet", response.data)
+        self.assertIn("yandex", response.data)
+        self.assertIn("withdrawals", response.data)
+        self.assertIn("bank_simulator", response.data)
+        self.assertEqual(response.data["withdrawals"]["count"], 1)
+        self.assertEqual(response.data["bank_simulator"]["count"], 1)

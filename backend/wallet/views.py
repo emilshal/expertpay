@@ -18,6 +18,7 @@ from payments.models import InternalTransfer
 from .models import BankAccount, Wallet, WithdrawalRequest
 from .serializers import (
     BankAccountSerializer,
+    WalletTopUpSerializer,
     TransactionFeedSerializer,
     WalletSerializer,
     WithdrawalCreateSerializer,
@@ -282,3 +283,60 @@ class WithdrawalStatusUpdateView(APIView):
             metadata={"status": target_status},
         )
         return Response(WithdrawalSerializer(withdrawal).data, status=200)
+
+
+class WalletTopUpView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        request_id = request.headers.get("X-Request-ID", "")
+        idempotency_key = request.headers.get("Idempotency-Key", "")
+        endpoint = "/api/wallet/top-up/"
+
+        serializer = WalletTopUpSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        amount = serializer.validated_data["amount"]
+        note = serializer.validated_data.get("note", "")
+
+        idempotency_record, replay_body, replay_status = begin_idempotent_request(
+            user=request.user,
+            method="POST",
+            endpoint=endpoint,
+            key=idempotency_key,
+            payload=serializer.validated_data,
+        )
+        if replay_body is not None:
+            return Response(replay_body, status=replay_status)
+
+        wallet, _ = Wallet.objects.get_or_create(user=request.user)
+        ledger_account = get_or_create_user_ledger_account(request.user, wallet.currency)
+        ensure_opening_entry(ledger_account, wallet.balance, created_by=request.user)
+
+        with db_transaction.atomic():
+            locked_ledger_account = LedgerAccount.objects.select_for_update().get(id=ledger_account.id)
+            create_ledger_entry(
+                account=locked_ledger_account,
+                amount=amount,
+                entry_type="sandbox_topup",
+                created_by=request.user,
+                reference_type="wallet",
+                reference_id=str(wallet.id),
+                metadata={"description": "Sandbox top-up", "note": note},
+            )
+
+            wallet.balance = wallet.balance + amount
+            wallet.save(update_fields=["balance", "updated_at"])
+
+        response_payload = {"balance": str(wallet.balance), "currency": wallet.currency, "credited_amount": str(amount)}
+        finalize_idempotent_request(idempotency_record, status_code=201, response_body=response_payload)
+        log_audit(
+            user=request.user,
+            action="wallet_topped_up",
+            resource_type="wallet",
+            resource_id=wallet.id,
+            request_id=request_id,
+            ip_address=request.META.get("REMOTE_ADDR"),
+            metadata={"amount": str(amount), "currency": wallet.currency, "note": note},
+        )
+        return Response(response_payload, status=status.HTTP_201_CREATED)

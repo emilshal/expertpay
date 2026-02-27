@@ -44,3 +44,8 @@ class WithdrawalSerializer(serializers.ModelSerializer):
 
 class WithdrawalStatusUpdateSerializer(serializers.Serializer):
     status = serializers.ChoiceField(choices=WithdrawalRequest.Status.choices)
+
+
+class WalletTopUpSerializer(serializers.Serializer):
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0.01"))
+    note = serializers.CharField(required=False, allow_blank=True, max_length=255)

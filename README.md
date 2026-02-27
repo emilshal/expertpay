@@ -61,10 +61,12 @@ This uses PostgreSQL on `localhost:5433` with:
 - `GET /api/wallet/bank-accounts/`
 - `POST /api/wallet/bank-accounts/`
 - `GET /api/wallet/transactions/`
+- `POST /api/wallet/top-up/` (sandbox testing credit)
 - `POST /api/wallet/withdrawals/`
 - `GET /api/wallet/withdrawals/list/`
 - `PATCH /api/wallet/withdrawals/<id>/status/` (staff/admin flow)
 - `POST /api/transfers/internal/`
+- `POST /api/transfers/internal/by-bank/`
 - `POST /api/integrations/yandex/connect/`
 - `GET /api/integrations/yandex/events/`
 - `POST /api/integrations/yandex/simulate-events/`
@@ -74,6 +76,7 @@ This uses PostgreSQL on `localhost:5433` with:
 - `GET /api/integrations/bank-sim/payouts/`
 - `POST /api/integrations/bank-sim/payouts/submit/`
 - `POST /api/integrations/bank-sim/payouts/<id>/status/`
+- `GET /api/integrations/reconciliation/summary/`
 
 ### Idempotency (money endpoints)
 For money-changing requests, include:

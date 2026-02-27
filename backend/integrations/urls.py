@@ -7,6 +7,7 @@ from .views import (
     ListBankSimulatorPayoutsView,
     ListYandexEventsView,
     ReconcileYandexView,
+    ReconciliationSummaryView,
     SimulateYandexEventsView,
     SubmitBankSimulatorPayoutView,
     UpdateBankSimulatorPayoutStatusView,
@@ -27,4 +28,5 @@ urlpatterns = [
         UpdateBankSimulatorPayoutStatusView.as_view(),
         name="bank-sim-status-update",
     ),
+    path("reconciliation/summary/", ReconciliationSummaryView.as_view(), name="reconciliation-summary"),
 ]
