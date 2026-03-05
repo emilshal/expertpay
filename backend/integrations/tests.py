@@ -135,6 +135,7 @@ class YandexSimulatorApiTests(APITestCase):
     def test_sync_live_endpoint_persists_last_sync_metadata(self, mocked_sync):
         mocked_sync.return_value = {
             "ok": True,
+            "partial": False,
             "configured": True,
             "detail": "Live sync completed.",
             "drivers": {"http_status": 200, "fetched": 12},
@@ -144,6 +145,12 @@ class YandexSimulatorApiTests(APITestCase):
                 "stored_new_events": 6,
                 "imported_count": 6,
                 "imported_total": "41.20",
+            },
+            "cursor": {
+                "from": "2026-03-01T00:00:00+04:00",
+                "to": "2026-03-02T00:00:00+04:00",
+                "next_from": "2026-03-02T00:00:01+04:00",
+                "full_sync": False,
             },
             "errors": {"drivers": None, "transactions": None},
         }
@@ -157,6 +164,8 @@ class YandexSimulatorApiTests(APITestCase):
         self.assertEqual(connection.status, "active")
         self.assertIn("last_live_sync", connection.config)
         self.assertEqual(connection.config["last_live_sync"]["drivers_fetched"], 12)
+        self.assertIn("last_transaction_cursor", connection.config)
+        self.assertEqual(connection.config["last_transaction_cursor"]["next_from"], "2026-03-02T00:00:01+04:00")
 
     def test_sync_live_endpoint_validates_limit(self):
         response = self.client.post(reverse("yandex-sync-live"), data={"limit": 1000}, format="json")

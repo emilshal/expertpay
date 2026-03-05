@@ -9,6 +9,7 @@ from urllib.request import Request, urlopen
 from django.conf import settings
 from django.db import transaction
 from django.db.models import Sum
+from django.utils.dateparse import parse_datetime
 from django.utils import timezone
 
 from ledger.services import (
@@ -140,15 +141,45 @@ def _extract_driver_id(item: dict) -> str:
     return ""
 
 
-def _fetch_live_transactions(*, limit: int):
+def _extract_transaction_timestamp(item: dict):
+    for key in ("event_at", "performed_at", "created_at", "transaction_time", "timestamp", "time"):
+        value = item.get(key)
+        if isinstance(value, str):
+            parsed = parse_datetime(value)
+            if parsed is not None:
+                if timezone.is_naive(parsed):
+                    return timezone.make_aware(parsed, timezone.get_current_timezone())
+                return parsed
+    return None
+
+
+def _build_sync_window(*, connection: ProviderConnection, full_sync: bool = False):
     now = timezone.now()
-    week_ago = now - timedelta(days=7)
-    window = {
-        "from": week_ago.isoformat(),
+    config = connection.config or {}
+    if full_sync:
+        return {
+            "from": (now - timedelta(days=7)).isoformat(),
+            "to": now.isoformat(),
+        }
+
+    last_cursor = config.get("last_transaction_cursor") or {}
+    cursor_from_raw = last_cursor.get("next_from")
+    cursor_from = parse_datetime(cursor_from_raw) if isinstance(cursor_from_raw, str) else None
+    if cursor_from is None:
+        cursor_from = now - timedelta(days=1)
+    if timezone.is_naive(cursor_from):
+        cursor_from = timezone.make_aware(cursor_from, timezone.get_current_timezone())
+
+    # Small overlap to avoid missing edge transactions around boundary timestamps.
+    safe_from = cursor_from - timedelta(minutes=2)
+    return {
+        "from": safe_from.isoformat(),
         "to": now.isoformat(),
     }
+
+
+def _fetch_live_transactions(*, limit: int, window: dict):
     attempts = [
-        {"query": {"park": {"id": settings.YANDEX_PARK_ID}}, "limit": limit},
         {
             "query": {
                 "park": {"id": settings.YANDEX_PARK_ID},
@@ -165,6 +196,7 @@ def _fetch_live_transactions(*, limit: int):
             },
             "limit": limit,
         },
+        {"query": {"park": {"id": settings.YANDEX_PARK_ID}}, "limit": limit},
     ]
 
     last_response = None
@@ -339,7 +371,13 @@ def test_live_yandex_connection():
     }
 
 
-def live_sync_yandex_data(*, connection: ProviderConnection, limit: int = 100, dry_run: bool = False):
+def live_sync_yandex_data(
+    *,
+    connection: ProviderConnection,
+    limit: int = 100,
+    dry_run: bool = False,
+    full_sync: bool = False,
+):
     missing = _yandex_missing_env_vars()
     if missing:
         return {
@@ -355,7 +393,8 @@ def live_sync_yandex_data(*, connection: ProviderConnection, limit: int = 100, d
         endpoint="/v1/parks/driver-profiles/list",
         body={"query": {"park": {"id": settings.YANDEX_PARK_ID}}, "limit": limit},
     )
-    transactions_response = _fetch_live_transactions(limit=limit)
+    sync_window = _build_sync_window(connection=connection, full_sync=full_sync)
+    transactions_response = _fetch_live_transactions(limit=limit, window=sync_window)
 
     drivers = _extract_items(drivers_response["body"] if isinstance(drivers_response["body"], dict) else {}, ("driver_profiles", "profiles", "items"))
     transactions = _extract_items(
@@ -389,6 +428,15 @@ def live_sync_yandex_data(*, connection: ProviderConnection, limit: int = 100, d
     if not dry_run:
         import_result = import_unprocessed_events(connection=connection)
 
+    latest_event_at = None
+    for item in transactions:
+        parsed = _extract_transaction_timestamp(item)
+        if parsed is not None and (latest_event_at is None or parsed > latest_event_at):
+            latest_event_at = parsed
+    if latest_event_at is None:
+        latest_event_at = timezone.now()
+    next_from = latest_event_at + timedelta(seconds=1)
+
     drivers_ok = bool(drivers_response["ok"])
     transactions_ok = bool(transactions_response["ok"])
     ok = transactions_ok
@@ -415,6 +463,12 @@ def live_sync_yandex_data(*, connection: ProviderConnection, limit: int = 100, d
             "stored_new_events": stored_new,
             "imported_count": import_result["imported_count"],
             "imported_total": import_result["imported_total"],
+        },
+        "cursor": {
+            "from": sync_window["from"],
+            "to": sync_window["to"],
+            "next_from": next_from.isoformat(),
+            "full_sync": full_sync,
         },
         "errors": {
             "drivers": None if drivers_response["ok"] else drivers_response["body"],
@@ -519,6 +573,10 @@ def build_reconciliation_report(*, user):
     ).first()
     if yandex_connection:
         yandex = reconciliation_summary(connection=yandex_connection)
+        yandex_config = yandex_connection.config or {}
+        yandex["last_connection_test"] = yandex_config.get("last_connection_test")
+        yandex["last_live_sync"] = yandex_config.get("last_live_sync")
+        yandex["last_transaction_cursor"] = yandex_config.get("last_transaction_cursor")
     else:
         yandex = {
             "imported_events": 0,
@@ -526,6 +584,9 @@ def build_reconciliation_report(*, user):
             "ledger_total": "0.00",
             "delta": "0.00",
             "status": "OK",
+            "last_connection_test": None,
+            "last_live_sync": None,
+            "last_transaction_cursor": None,
         }
 
     withdrawals = WithdrawalRequest.objects.filter(user=user)

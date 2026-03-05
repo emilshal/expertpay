@@ -72,6 +72,34 @@ export default function SettingsPage() {
 
           <div className="txRow" role="listitem">
             <div className="txMain">
+              <div className="txTitle">Yandex last sync</div>
+              <div className="txSub">
+                {report.yandex.last_live_sync
+                  ? `${report.yandex.last_live_sync.checked_at} | Drivers ${report.yandex.last_live_sync.drivers_fetched} | Transactions ${report.yandex.last_live_sync.transactions_fetched} | Imported ${report.yandex.last_live_sync.imported_count}`
+                  : "No live sync yet"}
+              </div>
+            </div>
+            <div className={`txAmount ${report.yandex.last_live_sync?.ok ? "pos" : "neg"}`}>
+              {report.yandex.last_live_sync ? (report.yandex.last_live_sync.partial ? "PARTIAL" : report.yandex.last_live_sync.ok ? "OK" : "ERROR") : "N/A"}
+            </div>
+          </div>
+
+          <div className="txRow" role="listitem">
+            <div className="txMain">
+              <div className="txTitle">Yandex cursor window</div>
+              <div className="txSub">
+                {report.yandex.last_transaction_cursor
+                  ? `From ${report.yandex.last_transaction_cursor.from} -> To ${report.yandex.last_transaction_cursor.to}`
+                  : "No cursor yet"}
+              </div>
+            </div>
+            <div className="txAmount">
+              {report.yandex.last_transaction_cursor?.next_from ?? "N/A"}
+            </div>
+          </div>
+
+          <div className="txRow" role="listitem">
+            <div className="txMain">
               <div className="txTitle">Withdrawals</div>
               <div className="txSub">
                 Total {report.withdrawals.total} | Completed {report.withdrawals.completed_total} | Pending{" "}

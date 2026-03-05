@@ -123,19 +123,25 @@ class SyncLiveYandexView(APIView):
         serializer.is_valid(raise_exception=True)
         limit = serializer.validated_data["limit"]
         dry_run = serializer.validated_data["dry_run"]
+        full_sync = serializer.validated_data["full_sync"]
 
         connection = _get_or_create_yandex_connection(request.user)
-        result = live_sync_yandex_data(connection=connection, limit=limit, dry_run=dry_run)
+        result = live_sync_yandex_data(connection=connection, limit=limit, dry_run=dry_run, full_sync=full_sync)
 
         config = dict(connection.config or {})
         config["mode"] = "live" if settings.YANDEX_MODE == "live" else "simulator"
         config["last_live_sync"] = {
             "ok": result.get("ok", False),
+            "partial": result.get("partial", False),
             "checked_at": timezone.now().isoformat(),
             "drivers_fetched": result.get("drivers", {}).get("fetched", 0),
             "transactions_fetched": result.get("transactions", {}).get("fetched", 0),
             "imported_count": result.get("transactions", {}).get("imported_count", 0),
+            "imported_total": result.get("transactions", {}).get("imported_total", "0.00"),
+            "detail": result.get("detail", ""),
         }
+        if result.get("cursor"):
+            config["last_transaction_cursor"] = result["cursor"]
         connection.config = config
         connection.status = "active" if result.get("ok") else "error"
         connection.save(update_fields=["config", "status"])

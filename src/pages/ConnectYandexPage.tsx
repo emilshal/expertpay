@@ -84,13 +84,27 @@ export default function ConnectYandexPage() {
           type="button"
           onClick={() =>
             void run(async () => {
-              const result = await syncLiveYandex({ limit: 100, dry_run: false });
+              const result = await syncLiveYandex({ limit: 100, dry_run: false, full_sync: false });
               setLiveSync(result.sync);
               setMessage(result.sync.detail);
             })
           }
         >
-          Sync Live Data
+          Sync Live Data (Incremental)
+        </button>
+
+        <button
+          className="transferSubmit"
+          type="button"
+          onClick={() =>
+            void run(async () => {
+              const result = await syncLiveYandex({ limit: 100, dry_run: false, full_sync: true });
+              setLiveSync(result.sync);
+              setMessage(result.sync.detail);
+            })
+          }
+        >
+          Full Sync (Last 7 Days)
         </button>
 
         <label className="transferField">
@@ -237,6 +251,15 @@ export default function ConnectYandexPage() {
               <div className="txSub">New external events: {liveSync.transactions.stored_new_events}</div>
             </div>
             <div className="txAmount pos">{liveSync.transactions.imported_total} GEL</div>
+          </div>
+          <div className="txRow" role="listitem">
+            <div className="txMain">
+              <div className="txTitle">Cursor</div>
+              <div className="txSub">
+                {liveSync.cursor ? `${liveSync.cursor.from} -> ${liveSync.cursor.to}` : "No cursor returned"}
+              </div>
+            </div>
+            <div className="txAmount">{liveSync.cursor?.next_from ?? "n/a"}</div>
           </div>
         </div>
       ) : null}

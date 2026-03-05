@@ -69,7 +69,7 @@ This uses PostgreSQL on `localhost:5433` with:
 - `POST /api/transfers/internal/by-bank/`
 - `POST /api/integrations/yandex/connect/`
 - `POST /api/integrations/yandex/test-connection/` (live credential health check)
-- `POST /api/integrations/yandex/sync-live/` (live driver + transaction sync into external events + ledger)
+- `POST /api/integrations/yandex/sync-live/` (live driver + transaction sync into external events + ledger; supports incremental cursor sync)
 - `GET /api/integrations/yandex/events/`
 - `POST /api/integrations/yandex/simulate-events/`
 - `POST /api/integrations/yandex/import/`
@@ -107,6 +107,27 @@ YANDEX_PARK_ID=...
 YANDEX_CLIENT_ID=...
 YANDEX_API_KEY=...
 YANDEX_REQUEST_TIMEOUT_SECONDS=20
+```
+
+### Incremental live sync scheduler
+Manual run:
+
+```bash
+cd backend
+../backend/.venv/bin/python manage.py sync_yandex_live --limit 100
+```
+
+Full backfill window run:
+
+```bash
+cd backend
+../backend/.venv/bin/python manage.py sync_yandex_live --limit 200 --full-sync
+```
+
+Cron example (every 10 minutes):
+
+```bash
+*/10 * * * * cd /Users/emilshalamberidze/Desktop/expertpay/backend && /Users/emilshalamberidze/Desktop/expertpay/backend/.venv/bin/python manage.py sync_yandex_live --limit 100 >> /tmp/expertpay-sync.log 2>&1
 ```
 
 ### Simulator tests

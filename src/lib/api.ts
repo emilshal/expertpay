@@ -179,6 +179,12 @@ export type YandexLiveSyncResult = {
     imported_count: number;
     imported_total: string;
   };
+  cursor?: {
+    from: string;
+    to: string;
+    next_from: string;
+    full_sync: boolean;
+  };
   errors: {
     drivers: unknown;
     transactions: unknown;
@@ -210,6 +216,28 @@ export type ReconciliationSummary = {
     ledger_total: string;
     delta: string;
     status: "OK" | "MISMATCH";
+    last_connection_test?: {
+      ok: boolean;
+      checked_at: string;
+      http_status: number | null;
+      detail: string;
+    } | null;
+    last_live_sync?: {
+      ok: boolean;
+      partial?: boolean;
+      checked_at: string;
+      drivers_fetched: number;
+      transactions_fetched: number;
+      imported_count: number;
+      imported_total?: string;
+      detail?: string;
+    } | null;
+    last_transaction_cursor?: {
+      from: string;
+      to: string;
+      next_from: string;
+      full_sync: boolean;
+    } | null;
   };
   withdrawals: {
     count: number;
@@ -376,14 +404,15 @@ export async function testYandexConnection() {
   );
 }
 
-export async function syncLiveYandex(input?: { limit?: number; dry_run?: boolean }) {
+export async function syncLiveYandex(input?: { limit?: number; dry_run?: boolean; full_sync?: boolean }) {
   return request<{ connection: YandexConnection; sync: YandexLiveSyncResult }>(
     "/api/integrations/yandex/sync-live/",
     {
       method: "POST",
       body: JSON.stringify({
         limit: input?.limit ?? 100,
-        dry_run: input?.dry_run ?? false
+        dry_run: input?.dry_run ?? false,
+        full_sync: input?.full_sync ?? false
       }),
       idempotent: true
     }
