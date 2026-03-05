@@ -75,13 +75,23 @@ export default function SettingsPage() {
               <div className="txTitle">Yandex last sync</div>
               <div className="txSub">
                 {report.yandex.last_live_sync
-                  ? `${report.yandex.last_live_sync.checked_at} | Drivers ${report.yandex.last_live_sync.drivers_fetched} | Transactions ${report.yandex.last_live_sync.transactions_fetched} | Imported ${report.yandex.last_live_sync.imported_count}`
+                  ? `${report.yandex.last_live_sync.checked_at} | Drivers fetched ${report.yandex.last_live_sync.drivers_fetched} | Drivers upserted ${report.yandex.last_live_sync.drivers_upserted ?? 0} | Transactions ${report.yandex.last_live_sync.transactions_fetched} | Imported ${report.yandex.last_live_sync.imported_count}`
                   : "No live sync yet"}
               </div>
             </div>
             <div className={`txAmount ${report.yandex.last_live_sync?.ok ? "pos" : "neg"}`}>
               {report.yandex.last_live_sync ? (report.yandex.last_live_sync.partial ? "PARTIAL" : report.yandex.last_live_sync.ok ? "OK" : "ERROR") : "N/A"}
             </div>
+          </div>
+
+          <div className="txRow" role="listitem">
+            <div className="txMain">
+              <div className="txTitle">Stored Yandex records</div>
+              <div className="txSub">
+                Driver profiles {report.yandex.stored_driver_profiles ?? 0} | Transactions {report.yandex.stored_transactions ?? 0}
+              </div>
+            </div>
+            <div className="txAmount pos">{report.yandex.imported_events}</div>
           </div>
 
           <div className="txRow" role="listitem">

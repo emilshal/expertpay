@@ -135,6 +135,7 @@ class SyncLiveYandexView(APIView):
             "partial": result.get("partial", False),
             "checked_at": timezone.now().isoformat(),
             "drivers_fetched": result.get("drivers", {}).get("fetched", 0),
+            "drivers_upserted": result.get("drivers", {}).get("upserted_profiles", 0),
             "transactions_fetched": result.get("transactions", {}).get("fetched", 0),
             "imported_count": result.get("transactions", {}).get("imported_count", 0),
             "imported_total": result.get("transactions", {}).get("imported_total", "0.00"),

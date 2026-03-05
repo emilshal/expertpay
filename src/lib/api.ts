@@ -171,6 +171,7 @@ export type YandexLiveSyncResult = {
   drivers: {
     http_status: number | null;
     fetched: number;
+    upserted_profiles?: number;
   };
   transactions: {
     http_status: number | null;
@@ -227,6 +228,7 @@ export type ReconciliationSummary = {
       partial?: boolean;
       checked_at: string;
       drivers_fetched: number;
+      drivers_upserted?: number;
       transactions_fetched: number;
       imported_count: number;
       imported_total?: string;
@@ -238,6 +240,8 @@ export type ReconciliationSummary = {
       next_from: string;
       full_sync: boolean;
     } | null;
+    stored_driver_profiles?: number;
+    stored_transactions?: number;
   };
   withdrawals: {
     count: number;

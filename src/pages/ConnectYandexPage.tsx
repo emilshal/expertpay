@@ -234,7 +234,9 @@ export default function ConnectYandexPage() {
           <div className="txRow" role="listitem">
             <div className="txMain">
               <div className="txTitle">Drivers fetched</div>
-              <div className="txSub">HTTP {liveSync.drivers.http_status ?? "n/a"}</div>
+              <div className="txSub">
+                HTTP {liveSync.drivers.http_status ?? "n/a"} | Upserted {liveSync.drivers.upserted_profiles ?? 0}
+              </div>
             </div>
             <div className="txAmount">{liveSync.drivers.fetched}</div>
           </div>

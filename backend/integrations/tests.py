@@ -9,7 +9,14 @@ from rest_framework.test import APITestCase
 from ledger.models import LedgerAccount, LedgerEntry
 from wallet.models import BankAccount, Wallet, WithdrawalRequest
 
-from .models import BankSimulatorPayout, ExternalEvent, ProviderConnection
+from .models import (
+    BankSimulatorPayout,
+    ExternalEvent,
+    ProviderConnection,
+    YandexDriverProfile,
+    YandexTransactionRecord,
+)
+from .services import live_sync_yandex_data
 
 
 User = get_user_model()
@@ -290,3 +297,64 @@ class BankSimulatorApiTests(APITestCase):
         self.assertIn("bank_simulator", response.data)
         self.assertEqual(response.data["withdrawals"]["count"], 1)
         self.assertEqual(response.data["bank_simulator"]["count"], 1)
+
+
+class YandexLiveSyncServiceTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="yandex_sync_user", password="pass1234")
+        self.connection = ProviderConnection.objects.create(
+            user=self.user,
+            provider=ProviderConnection.Provider.YANDEX,
+            external_account_id="fleet-yandex-sync-user",
+            status="active",
+            config={"mode": "live"},
+        )
+
+    @patch("integrations.services._yandex_request")
+    def test_live_sync_persists_normalized_driver_and_transaction_records(self, mocked_request):
+        mocked_request.side_effect = [
+            {
+                "ok": True,
+                "http_status": 200,
+                "body": {
+                    "driver_profiles": [
+                        {
+                            "id": "drv-1",
+                            "first_name": "Nika",
+                            "last_name": "Beridze",
+                            "phone": "+995598123123",
+                            "status": "active",
+                        }
+                    ]
+                },
+            },
+            {
+                "ok": True,
+                "http_status": 200,
+                "body": {
+                    "transactions": [
+                        {
+                            "id": "tx-100",
+                            "driver_id": "drv-1",
+                            "event_at": "2026-03-05T12:00:00+04:00",
+                            "amount": "15.25",
+                            "currency": "GEL",
+                            "category": "earning",
+                            "direction": "credit",
+                        }
+                    ]
+                },
+            },
+        ]
+
+        result = live_sync_yandex_data(connection=self.connection, limit=10, dry_run=False, full_sync=True)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["drivers"]["upserted_profiles"], 1)
+        self.assertEqual(result["transactions"]["stored_new_events"], 1)
+        self.assertEqual(result["transactions"]["imported_count"], 1)
+
+        self.assertEqual(YandexDriverProfile.objects.filter(connection=self.connection).count(), 1)
+        self.assertEqual(YandexTransactionRecord.objects.filter(connection=self.connection).count(), 1)
+        event = ExternalEvent.objects.get(connection=self.connection, external_id="tx-100")
+        self.assertEqual(event.payload["driver_id"], "drv-1")
+        self.assertEqual(event.payload["currency"], "GEL")

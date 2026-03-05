@@ -20,7 +20,13 @@ from ledger.services import (
 )
 from wallet.models import Wallet, WithdrawalRequest
 
-from .models import BankSimulatorPayout, ExternalEvent, ProviderConnection
+from .models import (
+    BankSimulatorPayout,
+    ExternalEvent,
+    ProviderConnection,
+    YandexDriverProfile,
+    YandexTransactionRecord,
+)
 
 
 def _yandex_missing_env_vars():
@@ -141,6 +147,33 @@ def _extract_driver_id(item: dict) -> str:
     return ""
 
 
+def _extract_driver_name_parts(item: dict):
+    first_name = str(item.get("first_name") or item.get("name") or "").strip()
+    last_name = str(item.get("last_name") or "").strip()
+    if not first_name and "full_name" in item and isinstance(item["full_name"], str):
+        parts = item["full_name"].strip().split()
+        if parts:
+            first_name = parts[0]
+            if len(parts) > 1:
+                last_name = " ".join(parts[1:])
+    return first_name, last_name
+
+
+def _extract_driver_phone(item: dict) -> str:
+    for key in ("phone", "phone_number", "driver_phone"):
+        value = item.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def _extract_driver_status(item: dict) -> str:
+    for key in ("status", "is_enabled", "is_active"):
+        if key in item:
+            return str(item.get(key))
+    return ""
+
+
 def _extract_transaction_timestamp(item: dict):
     for key in ("event_at", "performed_at", "created_at", "transaction_time", "timestamp", "time"):
         value = item.get(key)
@@ -151,6 +184,48 @@ def _extract_transaction_timestamp(item: dict):
                     return timezone.make_aware(parsed, timezone.get_current_timezone())
                 return parsed
     return None
+
+
+def _extract_transaction_category(item: dict) -> str:
+    for key in ("category", "transaction_type", "type"):
+        value = item.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def _extract_transaction_direction(item: dict) -> str:
+    for key in ("direction", "sign"):
+        value = item.get(key)
+        if value:
+            return str(value)
+    amount = _extract_transaction_amount(item)
+    if amount < Decimal("0.00"):
+        return "debit"
+    if amount > Decimal("0.00"):
+        return "credit"
+    return ""
+
+
+def _normalize_transaction_payload(item: dict):
+    transaction_id = _extract_transaction_id(item)
+    event_at = _extract_transaction_timestamp(item)
+    amount = _extract_transaction_amount(item)
+    driver_id = _extract_driver_id(item)
+    currency = item.get("currency") or item.get("currency_code") or "GEL"
+    category = _extract_transaction_category(item)
+    direction = _extract_transaction_direction(item)
+    return {
+        "external_id": transaction_id,
+        "event_at": event_at.isoformat() if event_at else None,
+        "driver_id": driver_id,
+        "currency": str(currency),
+        "net_amount": str(amount),
+        "category": category,
+        "direction": direction,
+        "event_type": item.get("event_type") or "earning",
+        "raw": item,
+    }
 
 
 def _build_sync_window(*, connection: ProviderConnection, full_sync: bool = False):
@@ -403,26 +478,55 @@ def live_sync_yandex_data(
     )
 
     stored_new = 0
+    upserted_drivers = 0
     if not dry_run:
+        for item in drivers:
+            external_driver_id = _extract_driver_id(item)
+            if not external_driver_id:
+                continue
+            first_name, last_name = _extract_driver_name_parts(item)
+            _, _created = YandexDriverProfile.objects.update_or_create(
+                connection=connection,
+                external_driver_id=external_driver_id,
+                defaults={
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "phone_number": _extract_driver_phone(item),
+                    "status": _extract_driver_status(item),
+                    "raw": item,
+                },
+            )
+            upserted_drivers += 1
+
         for item in transactions:
-            external_id = _extract_transaction_id(item)
-            net_amount = _extract_transaction_amount(item)
-            payload = {
-                "external_id": external_id,
-                "driver_id": _extract_driver_id(item),
-                "fleet": settings.YANDEX_PARK_ID,
-                "currency": item.get("currency") or item.get("currency_code") or "GEL",
-                "net_amount": str(net_amount),
-                "event_type": item.get("event_type") or "earning",
-                "raw": item,
-            }
-            _, created = ExternalEvent.objects.get_or_create(
+            normalized = _normalize_transaction_payload(item)
+            external_id = normalized["external_id"]
+            event, created = ExternalEvent.objects.get_or_create(
                 connection=connection,
                 external_id=external_id,
-                defaults={"event_type": "earning", "payload": payload, "processed": False},
+                defaults={"event_type": "earning", "payload": normalized, "processed": False},
             )
+            if not created:
+                # Keep normalized schema fresh even for existing events.
+                event.payload = normalized
+                event.save(update_fields=["payload"])
             if created:
                 stored_new += 1
+
+            YandexTransactionRecord.objects.update_or_create(
+                connection=connection,
+                external_transaction_id=external_id,
+                defaults={
+                    "external_event": event,
+                    "driver_external_id": normalized.get("driver_id", ""),
+                    "event_at": _extract_transaction_timestamp(item),
+                    "amount": Decimal(normalized.get("net_amount", "0")),
+                    "currency": normalized.get("currency", "GEL"),
+                    "category": normalized.get("category", ""),
+                    "direction": normalized.get("direction", ""),
+                    "raw": item,
+                },
+            )
 
     import_result = {"imported_count": 0, "imported_total": "0.00"}
     if not dry_run:
@@ -456,6 +560,7 @@ def live_sync_yandex_data(
         "drivers": {
             "http_status": drivers_response["http_status"],
             "fetched": len(drivers),
+            "upserted_profiles": upserted_drivers,
         },
         "transactions": {
             "http_status": transactions_response["http_status"],
@@ -577,6 +682,8 @@ def build_reconciliation_report(*, user):
         yandex["last_connection_test"] = yandex_config.get("last_connection_test")
         yandex["last_live_sync"] = yandex_config.get("last_live_sync")
         yandex["last_transaction_cursor"] = yandex_config.get("last_transaction_cursor")
+        yandex["stored_driver_profiles"] = YandexDriverProfile.objects.filter(connection=yandex_connection).count()
+        yandex["stored_transactions"] = YandexTransactionRecord.objects.filter(connection=yandex_connection).count()
     else:
         yandex = {
             "imported_events": 0,
@@ -587,6 +694,8 @@ def build_reconciliation_report(*, user):
             "last_connection_test": None,
             "last_live_sync": None,
             "last_transaction_cursor": None,
+            "stored_driver_profiles": 0,
+            "stored_transactions": 0,
         }
 
     withdrawals = WithdrawalRequest.objects.filter(user=user)

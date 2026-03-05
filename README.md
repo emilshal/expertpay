@@ -96,6 +96,21 @@ Applied to:
 - Phone number: `+995598950001`
 - OTP code (dev): `123456`
 
+### Yandex data persisted locally
+Live sync stores:
+- normalized driver profiles (`YandexDriverProfile`)
+- normalized transaction records (`YandexTransactionRecord`)
+- raw source payloads for audit/debug
+
+Core normalized transaction fields:
+- `external_transaction_id`
+- `driver_external_id`
+- `event_at`
+- `amount`
+- `currency`
+- `category`
+- `direction`
+
 ### Yandex live connection env
 Set these in `backend/.env` before running a live credential check:
 
