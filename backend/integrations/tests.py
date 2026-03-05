@@ -1,4 +1,5 @@
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.urls import reverse
@@ -88,6 +89,78 @@ class YandexSimulatorApiTests(APITestCase):
             ProviderConnection.objects.filter(user=self.user, provider="yandex").count(),
             1,
         )
+
+    @patch("integrations.views.test_live_yandex_connection")
+    def test_test_connection_endpoint_updates_connection_status(self, mocked_test):
+        mocked_test.return_value = {
+            "ok": True,
+            "configured": True,
+            "mode": "live",
+            "http_status": 200,
+            "endpoint": "/v1/parks/driver-work-rules",
+            "detail": "Connection test succeeded.",
+            "response": {"ok": True},
+        }
+
+        response = self.client.post(reverse("yandex-test-connection"), data={}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["test"]["ok"])
+        self.assertEqual(response.data["test"]["http_status"], 200)
+
+        connection = ProviderConnection.objects.get(user=self.user, provider="yandex")
+        self.assertEqual(connection.status, "active")
+        self.assertIn("last_connection_test", connection.config)
+        self.assertEqual(connection.config["last_connection_test"]["http_status"], 200)
+
+    @patch("integrations.views.test_live_yandex_connection")
+    def test_test_connection_endpoint_marks_error_on_failure(self, mocked_test):
+        mocked_test.return_value = {
+            "ok": False,
+            "configured": True,
+            "mode": "live",
+            "http_status": 401,
+            "endpoint": "/v1/parks/driver-work-rules",
+            "detail": "Unauthorized: check X-Client-ID/X-API-Key.",
+        }
+
+        response = self.client.post(reverse("yandex-test-connection"), data={}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["test"]["ok"])
+        self.assertEqual(response.data["test"]["http_status"], 401)
+
+        connection = ProviderConnection.objects.get(user=self.user, provider="yandex")
+        self.assertEqual(connection.status, "error")
+
+    @patch("integrations.views.live_sync_yandex_data")
+    def test_sync_live_endpoint_persists_last_sync_metadata(self, mocked_sync):
+        mocked_sync.return_value = {
+            "ok": True,
+            "configured": True,
+            "detail": "Live sync completed.",
+            "drivers": {"http_status": 200, "fetched": 12},
+            "transactions": {
+                "http_status": 200,
+                "fetched": 8,
+                "stored_new_events": 6,
+                "imported_count": 6,
+                "imported_total": "41.20",
+            },
+            "errors": {"drivers": None, "transactions": None},
+        }
+
+        response = self.client.post(reverse("yandex-sync-live"), data={"limit": 50, "dry_run": False}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["sync"]["ok"])
+        self.assertEqual(response.data["sync"]["transactions"]["imported_count"], 6)
+
+        connection = ProviderConnection.objects.get(user=self.user, provider="yandex")
+        self.assertEqual(connection.status, "active")
+        self.assertIn("last_live_sync", connection.config)
+        self.assertEqual(connection.config["last_live_sync"]["drivers_fetched"], 12)
+
+    def test_sync_live_endpoint_validates_limit(self):
+        response = self.client.post(reverse("yandex-sync-live"), data={"limit": 1000}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
 class BankSimulatorApiTests(APITestCase):

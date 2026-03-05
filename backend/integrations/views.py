@@ -1,3 +1,5 @@
+from django.conf import settings
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -9,6 +11,7 @@ from .models import BankSimulatorPayout, ProviderConnection
 from .serializers import (
     BankSimulatorPayoutSerializer,
     ExternalEventSerializer,
+    LiveYandexSyncSerializer,
     ProviderConnectionSerializer,
     SimulateEventsSerializer,
     SubmitBankPayoutSerializer,
@@ -19,17 +22,20 @@ from .services import (
     apply_bank_simulator_status_update,
     generate_simulated_events,
     import_unprocessed_events,
+    live_sync_yandex_data,
     reconciliation_summary,
     submit_withdrawal_to_bank_simulator,
+    test_live_yandex_connection,
 )
 
 
 def _get_or_create_yandex_connection(user):
+    mode = "live" if settings.YANDEX_MODE == "live" else "simulator"
     connection, _ = ProviderConnection.objects.get_or_create(
         user=user,
         provider=ProviderConnection.Provider.YANDEX,
         external_account_id=f"fleet-{user.username}",
-        defaults={"status": "active", "config": {"mode": "simulator"}},
+        defaults={"status": "active", "config": {"mode": mode}},
     )
     return connection
 
@@ -61,6 +67,32 @@ class ListYandexEventsView(APIView):
         return Response(ExternalEventSerializer(events, many=True).data)
 
 
+class TestYandexConnectionView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        connection = _get_or_create_yandex_connection(request.user)
+        result = test_live_yandex_connection()
+
+        config = dict(connection.config or {})
+        config["mode"] = "live" if settings.YANDEX_MODE == "live" else "simulator"
+        config["last_connection_test"] = {
+            "ok": result.get("ok", False),
+            "checked_at": timezone.now().isoformat(),
+            "http_status": result.get("http_status"),
+            "detail": result.get("detail", ""),
+        }
+        connection.config = config
+        connection.status = "active" if result.get("ok") else "error"
+        connection.save(update_fields=["config", "status"])
+
+        payload = {
+            "connection": ProviderConnectionSerializer(connection).data,
+            "test": result,
+        }
+        return Response(payload, status=status.HTTP_200_OK)
+
+
 class SimulateYandexEventsView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -81,6 +113,38 @@ class SimulateYandexEventsView(APIView):
             },
             status=status.HTTP_201_CREATED,
         )
+
+
+class SyncLiveYandexView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = LiveYandexSyncSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        limit = serializer.validated_data["limit"]
+        dry_run = serializer.validated_data["dry_run"]
+
+        connection = _get_or_create_yandex_connection(request.user)
+        result = live_sync_yandex_data(connection=connection, limit=limit, dry_run=dry_run)
+
+        config = dict(connection.config or {})
+        config["mode"] = "live" if settings.YANDEX_MODE == "live" else "simulator"
+        config["last_live_sync"] = {
+            "ok": result.get("ok", False),
+            "checked_at": timezone.now().isoformat(),
+            "drivers_fetched": result.get("drivers", {}).get("fetched", 0),
+            "transactions_fetched": result.get("transactions", {}).get("fetched", 0),
+            "imported_count": result.get("transactions", {}).get("imported_count", 0),
+        }
+        connection.config = config
+        connection.status = "active" if result.get("ok") else "error"
+        connection.save(update_fields=["config", "status"])
+
+        payload = {
+            "connection": ProviderConnectionSerializer(connection).data,
+            "sync": result,
+        }
+        return Response(payload, status=status.HTTP_200_OK)
 
 
 class ImportYandexEventsView(APIView):

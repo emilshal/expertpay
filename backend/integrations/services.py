@@ -1,7 +1,12 @@
 from decimal import Decimal
 import random
 from datetime import timedelta
+import json
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
@@ -15,6 +20,165 @@ from ledger.services import (
 from wallet.models import Wallet, WithdrawalRequest
 
 from .models import BankSimulatorPayout, ExternalEvent, ProviderConnection
+
+
+def _yandex_missing_env_vars():
+    missing = []
+    if not settings.YANDEX_PARK_ID:
+        missing.append("YANDEX_PARK_ID")
+    if not settings.YANDEX_CLIENT_ID:
+        missing.append("YANDEX_CLIENT_ID")
+    if not settings.YANDEX_API_KEY:
+        missing.append("YANDEX_API_KEY")
+    return missing
+
+
+def _parse_json_response(response):
+    raw_body = response.read().decode("utf-8", errors="replace")
+    if not raw_body:
+        return {}
+    try:
+        return json.loads(raw_body)
+    except json.JSONDecodeError:
+        return {"raw": raw_body[:1000]}
+
+
+def _yandex_request(*, method: str, endpoint: str, query: dict | None = None, body: dict | None = None):
+    query_string = f"?{urlencode(query)}" if query else ""
+    url = f"{settings.YANDEX_BASE_URL}{endpoint}{query_string}"
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    request = Request(
+        url=url,
+        method=method,
+        data=data,
+        headers={
+            "X-Client-ID": settings.YANDEX_CLIENT_ID,
+            "X-API-Key": settings.YANDEX_API_KEY,
+            "Accept-Language": "en",
+            "Content-Type": "application/json",
+        },
+    )
+
+    try:
+        with urlopen(request, timeout=settings.YANDEX_REQUEST_TIMEOUT_SECONDS) as response:
+            return {
+                "ok": 200 <= getattr(response, "status", 200) < 300,
+                "http_status": getattr(response, "status", 200),
+                "body": _parse_json_response(response),
+            }
+    except HTTPError as exc:
+        parsed_body = {}
+        try:
+            body_text = exc.read().decode("utf-8", errors="replace")
+            parsed_body = json.loads(body_text) if body_text else {}
+        except json.JSONDecodeError:
+            parsed_body = {"raw": body_text[:1000]} if body_text else {}
+        return {
+            "ok": False,
+            "http_status": exc.code,
+            "body": parsed_body,
+        }
+    except URLError as exc:
+        return {
+            "ok": False,
+            "http_status": None,
+            "body": {"error": str(exc.reason)},
+        }
+
+
+def _extract_items(payload: dict, keys: tuple[str, ...]):
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
+def _to_decimal(value) -> Decimal:
+    if isinstance(value, Decimal):
+        return value
+    if isinstance(value, (int, float, str)):
+        try:
+            return Decimal(str(value))
+        except Exception:
+            return Decimal("0.00")
+    if isinstance(value, dict):
+        for candidate_key in ("amount", "value", "sum"):
+            if candidate_key in value:
+                return _to_decimal(value[candidate_key])
+    return Decimal("0.00")
+
+
+def _extract_transaction_amount(item: dict) -> Decimal:
+    # Yandex payloads vary by endpoint/version. We try common amount fields in order.
+    for key in ("amount", "net_amount", "total", "value", "cash"):
+        if key in item:
+            amount = _to_decimal(item[key])
+            if amount != Decimal("0.00"):
+                return amount
+    if "income" in item:
+        amount = _to_decimal(item["income"])
+        if amount != Decimal("0.00"):
+            return amount
+    return Decimal("0.00")
+
+
+def _extract_transaction_id(item: dict) -> str:
+    for key in ("id", "transaction_id", "uuid", "event_id"):
+        value = item.get(key)
+        if value:
+            return str(value)
+    # Last fallback: stable hash from JSON.
+    return str(abs(hash(json.dumps(item, sort_keys=True))))
+
+
+def _extract_driver_id(item: dict) -> str:
+    for key in ("driver_id", "contractor_id", "profile_id", "id"):
+        value = item.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def _fetch_live_transactions(*, limit: int):
+    now = timezone.now()
+    week_ago = now - timedelta(days=7)
+    window = {
+        "from": week_ago.isoformat(),
+        "to": now.isoformat(),
+    }
+    attempts = [
+        {"query": {"park": {"id": settings.YANDEX_PARK_ID}}, "limit": limit},
+        {
+            "query": {
+                "park": {"id": settings.YANDEX_PARK_ID},
+                "transaction": {"event_at": window},
+            },
+            "limit": limit,
+        },
+        {
+            "query": {
+                "park": {
+                    "id": settings.YANDEX_PARK_ID,
+                    "transaction": {"event_at": window},
+                }
+            },
+            "limit": limit,
+        },
+    ]
+
+    last_response = None
+    for body in attempts:
+        response = _yandex_request(
+            method="POST",
+            endpoint="/v2/parks/transactions/list",
+            body=body,
+        )
+        last_response = response
+        if response["ok"]:
+            return response
+
+    return last_response or {"ok": False, "http_status": None, "body": {"error": "No request attempts made."}}
 
 
 def _event_amount_for_mode(mode: str) -> Decimal:
@@ -121,6 +285,141 @@ def reconciliation_summary(*, connection: ProviderConnection):
         "ledger_total": str(yandex_ledger_total),
         "delta": str(delta),
         "status": "OK" if delta == Decimal("0.00") else "MISMATCH",
+    }
+
+
+def test_live_yandex_connection():
+    missing = _yandex_missing_env_vars()
+    if missing:
+        return {
+            "ok": False,
+            "configured": False,
+            "mode": settings.YANDEX_MODE,
+            "http_status": None,
+            "endpoint": "/v1/parks/driver-work-rules",
+            "detail": f"Missing Yandex env vars: {', '.join(missing)}",
+        }
+
+    response = _yandex_request(
+        method="GET",
+        endpoint="/v1/parks/driver-work-rules",
+        query={"park_id": settings.YANDEX_PARK_ID},
+    )
+    status_code = response["http_status"]
+    parsed_body = response["body"]
+    if response["ok"]:
+        return {
+            "ok": True,
+            "configured": True,
+            "mode": settings.YANDEX_MODE,
+            "http_status": status_code,
+            "endpoint": "/v1/parks/driver-work-rules",
+            "detail": "Connection test succeeded.",
+            "response": parsed_body,
+        }
+
+    detail = f"Yandex API returned HTTP {status_code}."
+    if status_code == 401:
+        detail = "Unauthorized: check X-Client-ID/X-API-Key."
+    elif status_code == 403:
+        detail = "Forbidden: credentials are valid but endpoint access may be disabled."
+    elif status_code == 429:
+        detail = "Rate limited by Yandex API."
+    elif status_code is None:
+        detail = f"Network error while calling Yandex API: {parsed_body.get('error', 'unknown')}"
+
+    return {
+        "ok": False,
+        "configured": True,
+        "mode": settings.YANDEX_MODE,
+        "http_status": status_code,
+        "endpoint": "/v1/parks/driver-work-rules",
+        "detail": detail,
+        "response": parsed_body,
+    }
+
+
+def live_sync_yandex_data(*, connection: ProviderConnection, limit: int = 100, dry_run: bool = False):
+    missing = _yandex_missing_env_vars()
+    if missing:
+        return {
+            "ok": False,
+            "configured": False,
+            "detail": f"Missing Yandex env vars: {', '.join(missing)}",
+            "drivers": {"fetched": 0},
+            "transactions": {"fetched": 0, "stored_new_events": 0, "imported_count": 0, "imported_total": "0.00"},
+        }
+
+    drivers_response = _yandex_request(
+        method="POST",
+        endpoint="/v1/parks/driver-profiles/list",
+        body={"query": {"park": {"id": settings.YANDEX_PARK_ID}}, "limit": limit},
+    )
+    transactions_response = _fetch_live_transactions(limit=limit)
+
+    drivers = _extract_items(drivers_response["body"] if isinstance(drivers_response["body"], dict) else {}, ("driver_profiles", "profiles", "items"))
+    transactions = _extract_items(
+        transactions_response["body"] if isinstance(transactions_response["body"], dict) else {},
+        ("transactions", "items", "results"),
+    )
+
+    stored_new = 0
+    if not dry_run:
+        for item in transactions:
+            external_id = _extract_transaction_id(item)
+            net_amount = _extract_transaction_amount(item)
+            payload = {
+                "external_id": external_id,
+                "driver_id": _extract_driver_id(item),
+                "fleet": settings.YANDEX_PARK_ID,
+                "currency": item.get("currency") or item.get("currency_code") or "GEL",
+                "net_amount": str(net_amount),
+                "event_type": item.get("event_type") or "earning",
+                "raw": item,
+            }
+            _, created = ExternalEvent.objects.get_or_create(
+                connection=connection,
+                external_id=external_id,
+                defaults={"event_type": "earning", "payload": payload, "processed": False},
+            )
+            if created:
+                stored_new += 1
+
+    import_result = {"imported_count": 0, "imported_total": "0.00"}
+    if not dry_run:
+        import_result = import_unprocessed_events(connection=connection)
+
+    drivers_ok = bool(drivers_response["ok"])
+    transactions_ok = bool(transactions_response["ok"])
+    ok = transactions_ok
+    partial = transactions_ok and not drivers_ok
+    if drivers_ok and transactions_ok:
+        detail = "Live sync completed."
+    elif partial:
+        detail = "Live sync completed for transactions, but driver sync failed."
+    else:
+        detail = "Live sync finished with API errors."
+
+    return {
+        "ok": ok,
+        "partial": partial,
+        "configured": True,
+        "detail": detail,
+        "drivers": {
+            "http_status": drivers_response["http_status"],
+            "fetched": len(drivers),
+        },
+        "transactions": {
+            "http_status": transactions_response["http_status"],
+            "fetched": len(transactions),
+            "stored_new_events": stored_new,
+            "imported_count": import_result["imported_count"],
+            "imported_total": import_result["imported_total"],
+        },
+        "errors": {
+            "drivers": None if drivers_response["ok"] else drivers_response["body"],
+            "transactions": None if transactions_response["ok"] else transactions_response["body"],
+        },
     }
 
 

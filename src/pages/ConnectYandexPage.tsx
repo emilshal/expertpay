@@ -4,6 +4,10 @@ import {
   importYandexEvents,
   reconcileYandex,
   simulateYandexEvents,
+  syncLiveYandex,
+  testYandexConnection,
+  type YandexLiveSyncResult,
+  type YandexConnectionTestResult,
   yandexEvents
 } from "../lib/api";
 
@@ -21,6 +25,8 @@ export default function ConnectYandexPage() {
     delta: string;
     status: "OK" | "MISMATCH";
   } | null>(null);
+  const [connectionTest, setConnectionTest] = useState<YandexConnectionTestResult | null>(null);
+  const [liveSync, setLiveSync] = useState<YandexLiveSyncResult | null>(null);
   const [events, setEvents] = useState<Array<{ id: number; external_id: string; processed: boolean }>>([]);
 
   async function run(action: () => Promise<void>) {
@@ -38,8 +44,8 @@ export default function ConnectYandexPage() {
 
   return (
     <section className="card">
-      <h1>Connect Yandex (Sandbox)</h1>
-      <p>Use this to simulate earnings, import to ledger, and reconcile before real Yandex access.</p>
+      <h1>Connect Yandex</h1>
+      <p>Test live credentials, then simulate/import/reconcile safely before moving full flows to live mode.</p>
 
       <div className="transferForm">
         <button
@@ -53,6 +59,38 @@ export default function ConnectYandexPage() {
           }
         >
           {loading ? "Please wait..." : "Connect Yandex Simulator"}
+        </button>
+
+        <button
+          className="transferSubmit"
+          type="button"
+          onClick={() =>
+            void run(async () => {
+              const result = await testYandexConnection();
+              setConnectionTest(result.test);
+              if (result.test.ok) {
+                setMessage(`Live check passed (HTTP ${result.test.http_status ?? "n/a"})`);
+              } else {
+                setMessage(`Live check failed: ${result.test.detail}`);
+              }
+            })
+          }
+        >
+          Test Live Credentials
+        </button>
+
+        <button
+          className="transferSubmit"
+          type="button"
+          onClick={() =>
+            void run(async () => {
+              const result = await syncLiveYandex({ limit: 100, dry_run: false });
+              setLiveSync(result.sync);
+              setMessage(result.sync.detail);
+            })
+          }
+        >
+          Sync Live Data
         </button>
 
         <label className="transferField">
@@ -140,6 +178,68 @@ export default function ConnectYandexPage() {
       </div>
 
       {message ? <p className="statusHint">{message}</p> : null}
+
+      {connectionTest ? (
+        <div className="txList" role="list">
+          <div className="txRow" role="listitem">
+            <div className="txMain">
+              <div className="txTitle">Live credential check</div>
+              <div className="txSub">{connectionTest.detail}</div>
+            </div>
+            <div className={`txAmount ${connectionTest.ok ? "pos" : "neg"}`}>
+              {connectionTest.ok ? "PASS" : "FAIL"}
+            </div>
+          </div>
+          <div className="txRow" role="listitem">
+            <div className="txMain">
+              <div className="txTitle">Mode</div>
+              <div className="txSub">{connectionTest.endpoint}</div>
+            </div>
+            <div className="txAmount">{connectionTest.mode}</div>
+          </div>
+          <div className="txRow" role="listitem">
+            <div className="txMain">
+              <div className="txTitle">HTTP status</div>
+            </div>
+            <div className="txAmount">{connectionTest.http_status ?? "n/a"}</div>
+          </div>
+        </div>
+      ) : null}
+
+      {liveSync ? (
+        <div className="txList" role="list" style={{ marginTop: "12px" }}>
+          <div className="txRow" role="listitem">
+            <div className="txMain">
+              <div className="txTitle">Live sync status</div>
+              <div className="txSub">{liveSync.detail}</div>
+            </div>
+            <div className={`txAmount ${liveSync.ok ? "pos" : "neg"}`}>
+              {liveSync.partial ? "PARTIAL" : liveSync.ok ? "OK" : "ERROR"}
+            </div>
+          </div>
+          <div className="txRow" role="listitem">
+            <div className="txMain">
+              <div className="txTitle">Drivers fetched</div>
+              <div className="txSub">HTTP {liveSync.drivers.http_status ?? "n/a"}</div>
+            </div>
+            <div className="txAmount">{liveSync.drivers.fetched}</div>
+          </div>
+          <div className="txRow" role="listitem">
+            <div className="txMain">
+              <div className="txTitle">Transactions fetched</div>
+              <div className="txSub">HTTP {liveSync.transactions.http_status ?? "n/a"}</div>
+            </div>
+            <div className="txAmount">{liveSync.transactions.fetched}</div>
+          </div>
+          <div className="txRow" role="listitem">
+            <div className="txMain">
+              <div className="txTitle">Imported to ledger</div>
+              <div className="txSub">New external events: {liveSync.transactions.stored_new_events}</div>
+            </div>
+            <div className="txAmount pos">{liveSync.transactions.imported_total} GEL</div>
+          </div>
+        </div>
+      ) : null}
 
       {reconcile ? (
         <div className="txList" role="list">

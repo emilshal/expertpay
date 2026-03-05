@@ -68,6 +68,8 @@ This uses PostgreSQL on `localhost:5433` with:
 - `POST /api/transfers/internal/`
 - `POST /api/transfers/internal/by-bank/`
 - `POST /api/integrations/yandex/connect/`
+- `POST /api/integrations/yandex/test-connection/` (live credential health check)
+- `POST /api/integrations/yandex/sync-live/` (live driver + transaction sync into external events + ledger)
 - `GET /api/integrations/yandex/events/`
 - `POST /api/integrations/yandex/simulate-events/`
 - `POST /api/integrations/yandex/import/`
@@ -91,8 +93,21 @@ Applied to:
 
 ### Fleet login demo data (seeded)
 - Fleet name: `New Tech`
-- Phone number: `+995555000111`
+- Phone number: `+995598950001`
 - OTP code (dev): `123456`
+
+### Yandex live connection env
+Set these in `backend/.env` before running a live credential check:
+
+```env
+YANDEX_ENABLED=true
+YANDEX_MODE=live
+YANDEX_BASE_URL=https://fleet-api.taxi.yandex.net
+YANDEX_PARK_ID=...
+YANDEX_CLIENT_ID=...
+YANDEX_API_KEY=...
+YANDEX_REQUEST_TIMEOUT_SECONDS=20
+```
 
 ### Simulator tests
 Run integration tests (requires DB connection). If Postgres is not running locally, run tests with SQLite override:

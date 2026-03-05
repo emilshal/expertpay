@@ -148,6 +148,14 @@ CORS_ALLOW_HEADERS = [
     "idempotency-key",
 ]
 
+YANDEX_ENABLED = os.getenv("YANDEX_ENABLED", "false").lower() == "true"
+YANDEX_MODE = os.getenv("YANDEX_MODE", "sim").lower()
+YANDEX_BASE_URL = os.getenv("YANDEX_BASE_URL", "https://fleet-api.taxi.yandex.net").rstrip("/")
+YANDEX_PARK_ID = os.getenv("YANDEX_PARK_ID", "").strip()
+YANDEX_CLIENT_ID = os.getenv("YANDEX_CLIENT_ID", "").strip()
+YANDEX_API_KEY = os.getenv("YANDEX_API_KEY", "").strip()
+YANDEX_REQUEST_TIMEOUT_SECONDS = int(os.getenv("YANDEX_REQUEST_TIMEOUT_SECONDS", "20"))
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
 

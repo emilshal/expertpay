@@ -153,6 +153,38 @@ export type YandexEvent = {
   created_at: string;
 };
 
+export type YandexConnectionTestResult = {
+  ok: boolean;
+  configured: boolean;
+  mode: string;
+  http_status: number | null;
+  endpoint: string;
+  detail: string;
+  response?: unknown;
+};
+
+export type YandexLiveSyncResult = {
+  ok: boolean;
+  partial?: boolean;
+  configured: boolean;
+  detail: string;
+  drivers: {
+    http_status: number | null;
+    fetched: number;
+  };
+  transactions: {
+    http_status: number | null;
+    fetched: number;
+    stored_new_events: number;
+    imported_count: number;
+    imported_total: string;
+  };
+  errors: {
+    drivers: unknown;
+    transactions: unknown;
+  };
+};
+
 export type BankSimPayout = {
   id: number;
   withdrawal_id: number;
@@ -331,6 +363,31 @@ export async function connectYandex() {
     method: "POST",
     body: JSON.stringify({})
   });
+}
+
+export async function testYandexConnection() {
+  return request<{ connection: YandexConnection; test: YandexConnectionTestResult }>(
+    "/api/integrations/yandex/test-connection/",
+    {
+      method: "POST",
+      body: JSON.stringify({}),
+      idempotent: true
+    }
+  );
+}
+
+export async function syncLiveYandex(input?: { limit?: number; dry_run?: boolean }) {
+  return request<{ connection: YandexConnection; sync: YandexLiveSyncResult }>(
+    "/api/integrations/yandex/sync-live/",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        limit: input?.limit ?? 100,
+        dry_run: input?.dry_run ?? false
+      }),
+      idempotent: true
+    }
+  );
 }
 
 export async function simulateYandexEvents(input: {

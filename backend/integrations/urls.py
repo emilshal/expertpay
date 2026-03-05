@@ -9,13 +9,17 @@ from .views import (
     ReconcileYandexView,
     ReconciliationSummaryView,
     SimulateYandexEventsView,
+    SyncLiveYandexView,
     SubmitBankSimulatorPayoutView,
+    TestYandexConnectionView,
     UpdateBankSimulatorPayoutStatusView,
 )
 
 
 urlpatterns = [
     path("yandex/connect/", ConnectYandexView.as_view(), name="yandex-connect"),
+    path("yandex/test-connection/", TestYandexConnectionView.as_view(), name="yandex-test-connection"),
+    path("yandex/sync-live/", SyncLiveYandexView.as_view(), name="yandex-sync-live"),
     path("yandex/events/", ListYandexEventsView.as_view(), name="yandex-events"),
     path("yandex/simulate-events/", SimulateYandexEventsView.as_view(), name="yandex-simulate"),
     path("yandex/import/", ImportYandexEventsView.as_view(), name="yandex-import"),

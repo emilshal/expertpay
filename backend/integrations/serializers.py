@@ -23,6 +23,11 @@ class SimulateEventsSerializer(serializers.Serializer):
     count = serializers.IntegerField(min_value=1, max_value=100, default=10)
 
 
+class LiveYandexSyncSerializer(serializers.Serializer):
+    limit = serializers.IntegerField(min_value=1, max_value=500, default=100)
+    dry_run = serializers.BooleanField(default=False)
+
+
 class BankSimulatorPayoutSerializer(serializers.ModelSerializer):
     withdrawal_id = serializers.IntegerField(source="withdrawal.id", read_only=True)
 
