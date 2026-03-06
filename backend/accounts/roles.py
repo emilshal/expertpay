@@ -1,0 +1,36 @@
+from .models import FleetPhoneBinding
+
+
+ROLE_RANK = {
+    FleetPhoneBinding.Role.DRIVER: 1,
+    FleetPhoneBinding.Role.OPERATOR: 2,
+    FleetPhoneBinding.Role.ADMIN: 3,
+    FleetPhoneBinding.Role.OWNER: 4,
+}
+
+
+def get_request_fleet_binding(*, user, request):
+    if user is None or not user.is_authenticated:
+        return None
+
+    bindings = FleetPhoneBinding.objects.filter(
+        user=user,
+        is_active=True,
+        user__is_active=True,
+    ).select_related("fleet")
+
+    fleet_name = (request.headers.get("X-Fleet-Name") or request.query_params.get("fleet_name") or "").strip()
+    if fleet_name:
+        bindings = bindings.filter(fleet__name__iexact=fleet_name)
+
+    # Compatibility mode: if user has no fleet binding yet, we do not hard-block.
+    if not bindings.exists():
+        return None
+
+    return bindings.order_by("created_at", "id").first()
+
+
+def meets_min_role(*, binding, minimum_role):
+    if binding is None:
+        return True
+    return ROLE_RANK.get(binding.role, 0) >= ROLE_RANK.get(minimum_role, 999)

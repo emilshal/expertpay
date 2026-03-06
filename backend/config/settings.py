@@ -166,6 +166,7 @@ CORS_ALLOW_HEADERS = [
     *default_headers,
     "x-request-id",
     "idempotency-key",
+    "x-fleet-name",
 ]
 
 YANDEX_ENABLED = os.getenv("YANDEX_ENABLED", "false").lower() == "true"
@@ -177,6 +178,52 @@ YANDEX_API_KEY = os.getenv("YANDEX_API_KEY", "").strip()
 YANDEX_REQUEST_TIMEOUT_SECONDS = int(os.getenv("YANDEX_REQUEST_TIMEOUT_SECONDS", "20"))
 YANDEX_MAX_RETRIES = int(os.getenv("YANDEX_MAX_RETRIES", "3"))
 YANDEX_RETRY_BASE_SECONDS = float(os.getenv("YANDEX_RETRY_BASE_SECONDS", "0.5"))
+
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+SENTRY_DSN = os.getenv("SENTRY_DSN", "").strip()
+SENTRY_TRACES_SAMPLE_RATE = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.0"))
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "structured": {
+            "format": "%(asctime)s %(levelname)s %(name)s %(message)s",
+        }
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "structured",
+        }
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": LOG_LEVEL,
+    },
+    "loggers": {
+        "django": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+        "integrations": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+        "payments": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+        "wallet": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+        "accounts": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+    },
+}
+
+if SENTRY_DSN:
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.django import DjangoIntegration
+
+        sentry_sdk.init(
+            dsn=SENTRY_DSN,
+            integrations=[DjangoIntegration()],
+            traces_sample_rate=SENTRY_TRACES_SAMPLE_RATE,
+            send_default_pii=False,
+        )
+    except Exception:
+        # Keep app boot resilient when sentry package/config is unavailable.
+        pass
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field

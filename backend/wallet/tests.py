@@ -5,6 +5,7 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from accounts.models import Fleet, FleetPhoneBinding
 from ledger.models import LedgerAccount, LedgerEntry
 
 from .models import Wallet
@@ -49,3 +50,22 @@ class WalletTopUpApiTests(APITestCase):
 
         wallet = Wallet.objects.get(user=self.user)
         self.assertEqual(wallet.balance, Decimal("10.00"))
+
+    def test_driver_role_cannot_top_up(self):
+        fleet = Fleet.objects.create(name="Wallet Fleet")
+        FleetPhoneBinding.objects.create(
+            fleet=fleet,
+            user=self.user,
+            phone_number="598900002",
+            role=FleetPhoneBinding.Role.DRIVER,
+            is_active=True,
+        )
+        response = self.client.post(
+            reverse("wallet-top-up"),
+            data={"amount": "5.00", "note": "blocked"},
+            format="json",
+            HTTP_X_FLEET_NAME=fleet.name,
+            HTTP_IDEMPOTENCY_KEY="topup-key-3",
+            HTTP_X_REQUEST_ID="req-topup-3",
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)

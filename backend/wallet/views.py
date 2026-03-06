@@ -6,6 +6,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.models import FleetPhoneBinding
+from accounts.roles import get_request_fleet_binding, meets_min_role
 from audit.services import begin_idempotent_request, finalize_idempotent_request, log_audit
 from ledger.models import LedgerAccount, LedgerEntry
 from ledger.services import (
@@ -69,7 +71,16 @@ class BankAccountListCreateView(generics.ListCreateAPIView):
         return BankAccount.objects.filter(user=self.request.user, is_active=True)
 
     def perform_create(self, serializer):
+        binding = get_request_fleet_binding(user=self.request.user, request=self.request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.OPERATOR):
+            raise PermissionError("Only operator/admin/owner can add bank accounts.")
         serializer.save(user=self.request.user)
+
+    def create(self, request, *args, **kwargs):
+        try:
+            return super().create(request, *args, **kwargs)
+        except PermissionError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
 
 
 class TransactionListView(APIView):
@@ -126,6 +137,10 @@ class WithdrawalCreateView(APIView):
     throttle_scope = "money_write"
 
     def post(self, request):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.OPERATOR):
+            return Response({"detail": "Only operator/admin/owner can create withdrawals."}, status=403)
+
         request_id = request.headers.get("X-Request-ID", "")
         idempotency_key = request.headers.get("Idempotency-Key", "")
         endpoint = "/api/wallet/withdrawals/"
@@ -292,6 +307,10 @@ class WalletTopUpView(APIView):
     throttle_scope = "money_write"
 
     def post(self, request):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.ADMIN):
+            return Response({"detail": "Only admin/owner can top up wallet balance."}, status=403)
+
         request_id = request.headers.get("X-Request-ID", "")
         idempotency_key = request.headers.get("Idempotency-Key", "")
         endpoint = "/api/wallet/top-up/"

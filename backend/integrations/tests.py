@@ -7,6 +7,7 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from accounts.models import Fleet, FleetPhoneBinding
 from ledger.models import LedgerAccount, LedgerEntry
 from wallet.models import BankAccount, Wallet, WithdrawalRequest
 
@@ -180,6 +181,23 @@ class YandexSimulatorApiTests(APITestCase):
     def test_sync_live_endpoint_validates_limit(self):
         response = self.client.post(reverse("yandex-sync-live"), data={"limit": 1000}, format="json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_driver_role_cannot_run_sync_live(self):
+        fleet = Fleet.objects.create(name="Yandex Guard Fleet")
+        FleetPhoneBinding.objects.create(
+            fleet=fleet,
+            user=self.user,
+            phone_number="598900003",
+            role=FleetPhoneBinding.Role.DRIVER,
+            is_active=True,
+        )
+        response = self.client.post(
+            reverse("yandex-sync-live"),
+            data={"limit": 10, "dry_run": True, "full_sync": False},
+            format="json",
+            HTTP_X_FLEET_NAME=fleet.name,
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     @patch("integrations.views.sync_yandex_transaction_categories")
     def test_sync_categories_endpoint(self, mocked_sync):

@@ -2,6 +2,7 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
 const ACCESS_TOKEN_KEY = "expertpay_access_token";
 const REFRESH_TOKEN_KEY = "expertpay_refresh_token";
+const ACTIVE_FLEET_NAME_KEY = "expertpay_active_fleet_name";
 
 type Json = Record<string, unknown>;
 
@@ -22,6 +23,14 @@ function setTokens(access: string, refresh: string) {
   localStorage.setItem(REFRESH_TOKEN_KEY, refresh);
 }
 
+export function setActiveFleetName(name: string) {
+  localStorage.setItem(ACTIVE_FLEET_NAME_KEY, name);
+}
+
+export function getActiveFleetName() {
+  return localStorage.getItem(ACTIVE_FLEET_NAME_KEY);
+}
+
 export function setAuthTokens(access: string, refresh: string) {
   setTokens(access, refresh);
 }
@@ -29,6 +38,7 @@ export function setAuthTokens(access: string, refresh: string) {
 export function clearTokens() {
   localStorage.removeItem(ACCESS_TOKEN_KEY);
   localStorage.removeItem(REFRESH_TOKEN_KEY);
+  localStorage.removeItem(ACTIVE_FLEET_NAME_KEY);
 }
 
 async function refreshAccessToken() {
@@ -67,6 +77,8 @@ async function request<T>(
   if (auth) {
     const token = getAccessToken();
     if (token) headers.set("Authorization", `Bearer ${token}`);
+    const fleetName = getActiveFleetName();
+    if (fleetName) headers.set("X-Fleet-Name", fleetName);
   }
 
   let response = await fetch(buildUrl(path), { ...rest, headers });
@@ -98,6 +110,18 @@ export type MeResponse = {
 export type Fleet = {
   id: number;
   name: string;
+};
+
+export type FleetMember = {
+  id: number;
+  fleet: number;
+  username: string;
+  first_name: string;
+  last_name: string;
+  phone_number: string;
+  role: "driver" | "operator" | "admin" | "owner";
+  is_active: boolean;
+  created_at: string;
 };
 
 export type WalletBalance = {
@@ -350,7 +374,7 @@ export async function requestFleetCode(input: { fleet_name: string; phone_number
 }
 
 export async function verifyFleetCode(input: { challenge_id: number; code: string }) {
-  const payload = await request<{ access: string; refresh: string; user: MeResponse }>(
+  const payload = await request<{ access: string; refresh: string; user: MeResponse; fleet?: Fleet; role?: string }>(
     "/api/auth/verify-code/",
     {
       method: "POST",
@@ -359,7 +383,24 @@ export async function verifyFleetCode(input: { challenge_id: number; code: strin
     }
   );
   setTokens(payload.access, payload.refresh);
+  if (payload.fleet?.name) setActiveFleetName(payload.fleet.name);
   return payload;
+}
+
+export async function fleetMembers(fleetName: string) {
+  return request<FleetMember[]>(`/api/auth/fleet-members/?fleet_name=${encodeURIComponent(fleetName)}`);
+}
+
+export async function updateFleetMemberRole(input: {
+  fleet_name: string;
+  phone_number: string;
+  role: "driver" | "operator" | "admin" | "owner";
+}) {
+  return request<FleetMember>("/api/auth/fleet-members/role/", {
+    method: "PATCH",
+    body: JSON.stringify(input),
+    idempotent: true
+  });
 }
 
 export async function walletBalance() {

@@ -5,6 +5,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.models import FleetPhoneBinding
+from accounts.roles import get_request_fleet_binding, meets_min_role
 from audit.services import begin_idempotent_request, finalize_idempotent_request, log_audit
 from ledger.models import LedgerAccount
 from ledger.services import (
@@ -90,6 +92,10 @@ class InternalTransferCreateView(APIView):
     throttle_scope = "money_write"
 
     def post(self, request):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.OPERATOR):
+            return Response({"detail": "Only operator/admin/owner can create transfers."}, status=403)
+
         request_id = request.headers.get("X-Request-ID", "")
         idempotency_key = request.headers.get("Idempotency-Key", "")
         endpoint = "/api/transfers/internal/"
@@ -158,6 +164,10 @@ class InternalTransferByBankView(APIView):
     throttle_scope = "money_write"
 
     def post(self, request):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.OPERATOR):
+            return Response({"detail": "Only operator/admin/owner can create transfers."}, status=403)
+
         request_id = request.headers.get("X-Request-ID", "")
         idempotency_key = request.headers.get("Idempotency-Key", "")
         endpoint = "/api/transfers/internal/by-bank/"

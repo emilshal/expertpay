@@ -112,6 +112,10 @@ Notes:
 - Phone in DB + active binding allows login for that fleet.
 - `admin`/`owner` can view fleet members and update member roles.
 - `admin` cannot assign or modify `owner` role.
+- Money write guards:
+  - transfers + withdrawals + bank-account create: `operator` or higher
+  - wallet top-up (sandbox credit): `admin` or higher
+  - Yandex write actions (test/sync/categories): `admin` or higher
 
 ### Yandex data persisted locally
 Live sync stores:
@@ -152,6 +156,10 @@ THROTTLE_MONEY_WRITE=240/hour
 THROTTLE_MONEY_STATUS_WRITE=120/hour
 THROTTLE_YANDEX_WRITE=180/hour
 THROTTLE_YANDEX_READ=600/hour
+
+LOG_LEVEL=INFO
+SENTRY_DSN=
+SENTRY_TRACES_SAMPLE_RATE=0.0
 ```
 
 ### Incremental live sync scheduler

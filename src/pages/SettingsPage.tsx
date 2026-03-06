@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { reconciliationSummary, type ReconciliationSummary } from "../lib/api";
 
 export default function SettingsPage() {
@@ -27,9 +28,14 @@ export default function SettingsPage() {
     <section className="card">
       <div className="cardTitleRow">
         <h1>Reconciliation</h1>
-        <button className="btn btnGhost" type="button" onClick={() => void loadReport()}>
-          {loading ? "Loading..." : "Refresh"}
-        </button>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button className="btn btnGhost" type="button" onClick={() => void loadReport()}>
+            {loading ? "Loading..." : "Refresh"}
+          </button>
+          <Link className="btn btnGhost" to="/fleet-members">
+            Fleet Members
+          </Link>
+        </div>
       </div>
 
       {error ? <p className="statusError">{error}</p> : null}

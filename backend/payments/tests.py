@@ -5,6 +5,7 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from accounts.models import Fleet, FleetPhoneBinding
 from wallet.models import BankAccount, Wallet
 
 
@@ -64,3 +65,28 @@ class InternalTransferByBankApiTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("detail", response.data)
+
+    def test_driver_role_cannot_create_transfer(self):
+        fleet = Fleet.objects.create(name="Transfer Fleet")
+        FleetPhoneBinding.objects.create(
+            fleet=fleet,
+            user=self.sender,
+            phone_number="598900001",
+            role=FleetPhoneBinding.Role.DRIVER,
+            is_active=True,
+        )
+        response = self.client.post(
+            reverse("internal-transfer-by-bank"),
+            data={
+                "bank_name": "TBC",
+                "account_number": "GE29TB00000000000001",
+                "beneficiary_name": "Receiver User",
+                "amount": "10.00",
+                "note": "Private transfer",
+            },
+            format="json",
+            HTTP_X_FLEET_NAME=fleet.name,
+            HTTP_IDEMPOTENCY_KEY="bank-transfer-3",
+            HTTP_X_REQUEST_ID="req-bank-transfer-3",
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)

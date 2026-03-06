@@ -5,6 +5,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.models import FleetPhoneBinding
+from accounts.roles import get_request_fleet_binding, meets_min_role
 from wallet.models import WithdrawalRequest
 
 from .models import BankSimulatorPayout, ProviderConnection, YandexSyncRun, YandexTransactionCategory
@@ -76,6 +78,10 @@ class TestYandexConnectionView(APIView):
     throttle_scope = "yandex_write"
 
     def post(self, request):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.ADMIN):
+            return Response({"detail": "Only admin/owner can run Yandex connection tests."}, status=403)
+
         connection = _get_or_create_yandex_connection(request.user)
         result = test_live_yandex_connection()
 
@@ -126,6 +132,10 @@ class SyncLiveYandexView(APIView):
     throttle_scope = "yandex_write"
 
     def post(self, request):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.ADMIN):
+            return Response({"detail": "Only admin/owner can run live Yandex sync."}, status=403)
+
         serializer = LiveYandexSyncSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         limit = serializer.validated_data["limit"]
@@ -166,6 +176,10 @@ class SyncYandexCategoriesView(APIView):
     throttle_scope = "yandex_write"
 
     def post(self, request):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.ADMIN):
+            return Response({"detail": "Only admin/owner can sync Yandex categories."}, status=403)
+
         connection = _get_or_create_yandex_connection(request.user)
         result = sync_yandex_transaction_categories(connection=connection)
         config = dict(connection.config or {})
