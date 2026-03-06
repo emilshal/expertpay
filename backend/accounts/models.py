@@ -16,9 +16,16 @@ class Fleet(models.Model):
 
 
 class FleetPhoneBinding(models.Model):
+    class Role(models.TextChoices):
+        DRIVER = "driver", "Driver"
+        OPERATOR = "operator", "Operator"
+        ADMIN = "admin", "Admin"
+        OWNER = "owner", "Owner"
+
     fleet = models.ForeignKey(Fleet, on_delete=models.CASCADE, related_name="phone_bindings")
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="fleet_phone_bindings")
     phone_number = models.CharField(max_length=32)
+    role = models.CharField(max_length=20, choices=Role.choices, default=Role.DRIVER)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

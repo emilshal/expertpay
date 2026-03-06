@@ -1,7 +1,15 @@
 from django.urls import path
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
-from .views import FleetListView, MeView, RegisterView, RequestFleetCodeView, VerifyFleetCodeView
+from .views import (
+    FleetListView,
+    FleetMemberRoleUpdateView,
+    FleetMembersView,
+    MeView,
+    RegisterView,
+    RequestFleetCodeView,
+    VerifyFleetCodeView,
+)
 
 
 urlpatterns = [
@@ -12,4 +20,6 @@ urlpatterns = [
     path("fleets/", FleetListView.as_view(), name="fleet-list"),
     path("request-code/", RequestFleetCodeView.as_view(), name="request-fleet-code"),
     path("verify-code/", VerifyFleetCodeView.as_view(), name="verify-fleet-code"),
+    path("fleet-members/", FleetMembersView.as_view(), name="fleet-members"),
+    path("fleet-members/role/", FleetMemberRoleUpdateView.as_view(), name="fleet-member-role-update"),
 ]

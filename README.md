@@ -57,6 +57,8 @@ This uses PostgreSQL on `localhost:5433` with:
 - `GET /api/auth/fleets/`
 - `POST /api/auth/request-code/`
 - `POST /api/auth/verify-code/`
+- `GET /api/auth/fleet-members/?fleet_name=<name>` (admin/owner only)
+- `PATCH /api/auth/fleet-members/role/` (admin/owner only)
 - `GET /api/wallet/balance/`
 - `GET /api/wallet/bank-accounts/`
 - `POST /api/wallet/bank-accounts/`
@@ -98,6 +100,18 @@ Applied to:
 - Fleet name: `New Tech`
 - Phone number: `+995598950001`
 - OTP code (dev): `123456`
+
+### Fleet role model
+Fleet membership is phone-binding based, and role is fleet-scoped on each binding:
+- `driver`
+- `operator`
+- `admin`
+- `owner`
+
+Notes:
+- Phone in DB + active binding allows login for that fleet.
+- `admin`/`owner` can view fleet members and update member roles.
+- `admin` cannot assign or modify `owner` role.
 
 ### Yandex data persisted locally
 Live sync stores:
