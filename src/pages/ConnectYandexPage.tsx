@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import {
   connectYandex,
   importYandexEvents,
@@ -47,6 +48,11 @@ export default function ConnectYandexPage() {
     <section className="card">
       <h1>Connect Yandex</h1>
       <p>Test live credentials, then simulate/import/reconcile safely before moving full flows to live mode.</p>
+      <div style={{ marginBottom: "12px" }}>
+        <Link className="btn btnGhost" to="/yandex-ops">
+          Open Yandex Ops
+        </Link>
+      </div>
 
       <div className="transferForm">
         <button

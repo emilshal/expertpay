@@ -5,6 +5,7 @@ import DashboardPage from "./pages/DashboardPage";
 import PayoutsPage from "./pages/PayoutsPage";
 import SettingsPage from "./pages/SettingsPage";
 import ConnectYandexPage from "./pages/ConnectYandexPage";
+import YandexOpsPage from "./pages/YandexOpsPage";
 import LoginPage from "./pages/LoginPage";
 import { clearTokens, getAccessToken, me } from "./lib/api";
 
@@ -64,6 +65,7 @@ export default function App() {
         <Route path="/payouts" element={<PayoutsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/connect-yandex" element={<ConnectYandexPage />} />
+        <Route path="/yandex-ops" element={<YandexOpsPage />} />
         <Route path="/login" element={<Navigate to="/dashboard" replace />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
