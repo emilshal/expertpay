@@ -155,6 +155,8 @@ YANDEX_PARK_ID = os.getenv("YANDEX_PARK_ID", "").strip()
 YANDEX_CLIENT_ID = os.getenv("YANDEX_CLIENT_ID", "").strip()
 YANDEX_API_KEY = os.getenv("YANDEX_API_KEY", "").strip()
 YANDEX_REQUEST_TIMEOUT_SECONDS = int(os.getenv("YANDEX_REQUEST_TIMEOUT_SECONDS", "20"))
+YANDEX_MAX_RETRIES = int(os.getenv("YANDEX_MAX_RETRIES", "3"))
+YANDEX_RETRY_BASE_SECONDS = float(os.getenv("YANDEX_RETRY_BASE_SECONDS", "0.5"))
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field

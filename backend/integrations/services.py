@@ -2,6 +2,7 @@ from decimal import Decimal
 import random
 from datetime import timedelta
 import json
+import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -25,6 +26,8 @@ from .models import (
     ExternalEvent,
     ProviderConnection,
     YandexDriverProfile,
+    YandexSyncRun,
+    YandexTransactionCategory,
     YandexTransactionRecord,
 )
 
@@ -66,31 +69,58 @@ def _yandex_request(*, method: str, endpoint: str, query: dict | None = None, bo
         },
     )
 
-    try:
-        with urlopen(request, timeout=settings.YANDEX_REQUEST_TIMEOUT_SECONDS) as response:
-            return {
-                "ok": 200 <= getattr(response, "status", 200) < 300,
-                "http_status": getattr(response, "status", 200),
-                "body": _parse_json_response(response),
-            }
-    except HTTPError as exc:
-        parsed_body = {}
+    max_attempts = max(1, int(getattr(settings, "YANDEX_MAX_RETRIES", 3)))
+    base_delay = float(getattr(settings, "YANDEX_RETRY_BASE_SECONDS", 0.5))
+    retryable_http = {429, 500, 502, 503, 504}
+
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
         try:
-            body_text = exc.read().decode("utf-8", errors="replace")
-            parsed_body = json.loads(body_text) if body_text else {}
-        except json.JSONDecodeError:
-            parsed_body = {"raw": body_text[:1000]} if body_text else {}
-        return {
-            "ok": False,
-            "http_status": exc.code,
-            "body": parsed_body,
-        }
-    except URLError as exc:
-        return {
-            "ok": False,
-            "http_status": None,
-            "body": {"error": str(exc.reason)},
-        }
+            with urlopen(request, timeout=settings.YANDEX_REQUEST_TIMEOUT_SECONDS) as response:
+                return {
+                    "ok": 200 <= getattr(response, "status", 200) < 300,
+                    "http_status": getattr(response, "status", 200),
+                    "body": _parse_json_response(response),
+                    "attempts": attempt,
+                }
+        except HTTPError as exc:
+            parsed_body = {}
+            try:
+                body_text = exc.read().decode("utf-8", errors="replace")
+                parsed_body = json.loads(body_text) if body_text else {}
+            except json.JSONDecodeError:
+                parsed_body = {"raw": body_text[:1000]} if body_text else {}
+
+            last_error = {
+                "ok": False,
+                "http_status": exc.code,
+                "body": parsed_body,
+                "attempts": attempt,
+            }
+            if exc.code in retryable_http and attempt < max_attempts:
+                sleep_seconds = (base_delay * (2 ** (attempt - 1))) + random.uniform(0, 0.2)
+                time.sleep(sleep_seconds)
+                continue
+            return last_error
+        except URLError as exc:
+            last_error = {
+                "ok": False,
+                "http_status": None,
+                "body": {"error": str(exc.reason)},
+                "attempts": attempt,
+            }
+            if attempt < max_attempts:
+                sleep_seconds = (base_delay * (2 ** (attempt - 1))) + random.uniform(0, 0.2)
+                time.sleep(sleep_seconds)
+                continue
+            return last_error
+
+    return last_error or {
+        "ok": False,
+        "http_status": None,
+        "body": {"error": "Unknown Yandex request failure"},
+        "attempts": max_attempts,
+    }
 
 
 def _extract_items(payload: dict, keys: tuple[str, ...]):
@@ -288,6 +318,24 @@ def _fetch_live_transactions(*, limit: int, window: dict):
     return last_response or {"ok": False, "http_status": None, "body": {"error": "No request attempts made."}}
 
 
+def _fetch_yandex_transaction_categories():
+    attempts = [
+        {"query": {"park": {"id": settings.YANDEX_PARK_ID}}},
+        {"park": {"id": settings.YANDEX_PARK_ID}},
+    ]
+    last_response = None
+    for body in attempts:
+        response = _yandex_request(
+            method="POST",
+            endpoint="/v2/parks/transactions/categories/list",
+            body=body,
+        )
+        last_response = response
+        if response["ok"]:
+            return response
+    return last_response or {"ok": False, "http_status": None, "body": {"error": "No request attempts made."}}
+
+
 def _event_amount_for_mode(mode: str) -> Decimal:
     if mode == "spiky":
         return Decimal(random.choice(["8.25", "12.40", "31.50", "60.00", "95.75"]))
@@ -446,22 +494,79 @@ def test_live_yandex_connection():
     }
 
 
-def live_sync_yandex_data(
-    *,
-    connection: ProviderConnection,
-    limit: int = 100,
-    dry_run: bool = False,
-    full_sync: bool = False,
-):
+def sync_yandex_transaction_categories(*, connection: ProviderConnection):
     missing = _yandex_missing_env_vars()
     if missing:
         return {
             "ok": False,
             "configured": False,
             "detail": f"Missing Yandex env vars: {', '.join(missing)}",
+            "fetched": 0,
+            "upserted": 0,
+            "http_status": None,
+            "errors": {"missing": missing},
+        }
+
+    response = _fetch_yandex_transaction_categories()
+    categories = _extract_items(response["body"] if isinstance(response["body"], dict) else {}, ("categories", "items", "results"))
+
+    upserted = 0
+    for item in categories:
+        external_category_id = str(item.get("id") or item.get("code") or item.get("name") or "")
+        if not external_category_id:
+            continue
+        _, _created = YandexTransactionCategory.objects.update_or_create(
+            connection=connection,
+            external_category_id=external_category_id,
+            defaults={
+                "code": str(item.get("code") or ""),
+                "name": str(item.get("name") or item.get("title") or external_category_id),
+                "is_creatable": bool(item.get("is_creatable", False)),
+                "is_enabled": bool(item.get("is_enabled", True)),
+                "raw": item,
+            },
+        )
+        upserted += 1
+
+    return {
+        "ok": bool(response["ok"]),
+        "configured": True,
+        "detail": "Category sync completed." if response["ok"] else "Category sync failed.",
+        "fetched": len(categories),
+        "upserted": upserted,
+        "http_status": response["http_status"],
+        "errors": None if response["ok"] else response["body"],
+    }
+
+
+def live_sync_yandex_data(
+    *,
+    connection: ProviderConnection,
+    limit: int = 100,
+    dry_run: bool = False,
+    full_sync: bool = False,
+    trigger: str = YandexSyncRun.Trigger.API,
+):
+    started_at = timezone.now()
+    missing = _yandex_missing_env_vars()
+    if missing:
+        result = {
+            "ok": False,
+            "configured": False,
+            "detail": f"Missing Yandex env vars: {', '.join(missing)}",
             "drivers": {"fetched": 0},
             "transactions": {"fetched": 0, "stored_new_events": 0, "imported_count": 0, "imported_total": "0.00"},
         }
+        _record_yandex_sync_run(
+            connection=connection,
+            result=result,
+            trigger=trigger,
+            dry_run=dry_run,
+            full_sync=full_sync,
+            started_at=started_at,
+            completed_at=timezone.now(),
+        )
+        return result
 
     drivers_response = _yandex_request(
         method="POST",
@@ -552,7 +657,7 @@ def live_sync_yandex_data(
     else:
         detail = "Live sync finished with API errors."
 
-    return {
+    result = {
         "ok": ok,
         "partial": partial,
         "configured": True,
@@ -580,6 +685,51 @@ def live_sync_yandex_data(
             "transactions": None if transactions_response["ok"] else transactions_response["body"],
         },
     }
+    _record_yandex_sync_run(
+        connection=connection,
+        result=result,
+        trigger=trigger,
+        dry_run=dry_run,
+        full_sync=full_sync,
+        started_at=started_at,
+        completed_at=timezone.now(),
+    )
+    return result
+
+
+def _record_yandex_sync_run(*, connection, result, trigger, dry_run, full_sync, started_at, completed_at):
+    cursor = result.get("cursor") or {}
+    cursor_from = parse_datetime(cursor["from"]) if isinstance(cursor.get("from"), str) else None
+    cursor_to = parse_datetime(cursor["to"]) if isinstance(cursor.get("to"), str) else None
+    cursor_next_from = parse_datetime(cursor["next_from"]) if isinstance(cursor.get("next_from"), str) else None
+
+    status = YandexSyncRun.Status.ERROR
+    if result.get("ok"):
+        status = YandexSyncRun.Status.PARTIAL if result.get("partial") else YandexSyncRun.Status.OK
+
+    imported_total = Decimal(str(result.get("transactions", {}).get("imported_total", "0")))
+    YandexSyncRun.objects.create(
+        connection=connection,
+        trigger=trigger,
+        status=status,
+        dry_run=dry_run,
+        full_sync=full_sync,
+        drivers_http_status=result.get("drivers", {}).get("http_status"),
+        transactions_http_status=result.get("transactions", {}).get("http_status"),
+        drivers_fetched=result.get("drivers", {}).get("fetched", 0),
+        drivers_upserted=result.get("drivers", {}).get("upserted_profiles", 0),
+        transactions_fetched=result.get("transactions", {}).get("fetched", 0),
+        transactions_stored_new=result.get("transactions", {}).get("stored_new_events", 0),
+        imported_count=result.get("transactions", {}).get("imported_count", 0),
+        imported_total=imported_total,
+        cursor_from=cursor_from,
+        cursor_to=cursor_to,
+        cursor_next_from=cursor_next_from,
+        detail=result.get("detail", ""),
+        error_details=result.get("errors") or {},
+        started_at=started_at,
+        completed_at=completed_at,
+    )
 
 
 def submit_withdrawal_to_bank_simulator(*, connection: ProviderConnection, withdrawal: WithdrawalRequest):
@@ -681,9 +831,12 @@ def build_reconciliation_report(*, user):
         yandex_config = yandex_connection.config or {}
         yandex["last_connection_test"] = yandex_config.get("last_connection_test")
         yandex["last_live_sync"] = yandex_config.get("last_live_sync")
+        yandex["last_category_sync"] = yandex_config.get("last_category_sync")
         yandex["last_transaction_cursor"] = yandex_config.get("last_transaction_cursor")
         yandex["stored_driver_profiles"] = YandexDriverProfile.objects.filter(connection=yandex_connection).count()
         yandex["stored_transactions"] = YandexTransactionRecord.objects.filter(connection=yandex_connection).count()
+        yandex["stored_categories"] = YandexTransactionCategory.objects.filter(connection=yandex_connection).count()
+        yandex["sync_runs_count"] = YandexSyncRun.objects.filter(connection=yandex_connection).count()
     else:
         yandex = {
             "imported_events": 0,
@@ -693,9 +846,12 @@ def build_reconciliation_report(*, user):
             "status": "OK",
             "last_connection_test": None,
             "last_live_sync": None,
+            "last_category_sync": None,
             "last_transaction_cursor": None,
             "stored_driver_profiles": 0,
             "stored_transactions": 0,
+            "stored_categories": 0,
+            "sync_runs_count": 0,
         }
 
     withdrawals = WithdrawalRequest.objects.filter(user=user)

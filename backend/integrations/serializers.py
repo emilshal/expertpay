@@ -1,6 +1,12 @@
 from rest_framework import serializers
 
-from .models import BankSimulatorPayout, ExternalEvent, ProviderConnection
+from .models import (
+    BankSimulatorPayout,
+    ExternalEvent,
+    ProviderConnection,
+    YandexSyncRun,
+    YandexTransactionCategory,
+)
 
 
 class ProviderConnectionSerializer(serializers.ModelSerializer):
@@ -61,3 +67,44 @@ class UpdateBankPayoutStatusSerializer(serializers.Serializer):
         ]
     )
     failure_reason = serializers.CharField(required=False, allow_blank=True, max_length=255)
+
+
+class YandexTransactionCategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = YandexTransactionCategory
+        fields = (
+            "id",
+            "external_category_id",
+            "code",
+            "name",
+            "is_creatable",
+            "is_enabled",
+            "updated_at",
+        )
+
+
+class YandexSyncRunSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = YandexSyncRun
+        fields = (
+            "id",
+            "trigger",
+            "status",
+            "dry_run",
+            "full_sync",
+            "drivers_http_status",
+            "transactions_http_status",
+            "drivers_fetched",
+            "drivers_upserted",
+            "transactions_fetched",
+            "transactions_stored_new",
+            "imported_count",
+            "imported_total",
+            "cursor_from",
+            "cursor_to",
+            "cursor_next_from",
+            "detail",
+            "started_at",
+            "completed_at",
+            "created_at",
+        )

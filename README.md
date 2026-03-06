@@ -70,6 +70,9 @@ This uses PostgreSQL on `localhost:5433` with:
 - `POST /api/integrations/yandex/connect/`
 - `POST /api/integrations/yandex/test-connection/` (live credential health check)
 - `POST /api/integrations/yandex/sync-live/` (live driver + transaction sync into external events + ledger; supports incremental cursor sync)
+- `POST /api/integrations/yandex/sync-categories/` (sync transaction categories from Yandex)
+- `GET /api/integrations/yandex/categories/` (list synced categories)
+- `GET /api/integrations/yandex/sync-runs/` (list Yandex sync history runs)
 - `GET /api/integrations/yandex/events/`
 - `POST /api/integrations/yandex/simulate-events/`
 - `POST /api/integrations/yandex/import/`
@@ -100,6 +103,8 @@ Applied to:
 Live sync stores:
 - normalized driver profiles (`YandexDriverProfile`)
 - normalized transaction records (`YandexTransactionRecord`)
+- transaction categories (`YandexTransactionCategory`)
+- sync run history (`YandexSyncRun`)
 - raw source payloads for audit/debug
 
 Core normalized transaction fields:
@@ -122,6 +127,8 @@ YANDEX_PARK_ID=...
 YANDEX_CLIENT_ID=...
 YANDEX_API_KEY=...
 YANDEX_REQUEST_TIMEOUT_SECONDS=20
+YANDEX_MAX_RETRIES=3
+YANDEX_RETRY_BASE_SECONDS=0.5
 ```
 
 ### Incremental live sync scheduler

@@ -32,6 +32,7 @@ class Command(BaseCommand):
                 limit=limit,
                 dry_run=dry_run,
                 full_sync=full_sync,
+                trigger="scheduler",
             )
 
             config = dict(connection.config or {})

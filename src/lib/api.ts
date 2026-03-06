@@ -192,6 +192,39 @@ export type YandexLiveSyncResult = {
   };
 };
 
+export type YandexCategory = {
+  id: number;
+  external_category_id: string;
+  code: string;
+  name: string;
+  is_creatable: boolean;
+  is_enabled: boolean;
+  updated_at: string;
+};
+
+export type YandexSyncRun = {
+  id: number;
+  trigger: "api" | "scheduler";
+  status: "ok" | "partial" | "error";
+  dry_run: boolean;
+  full_sync: boolean;
+  drivers_http_status: number | null;
+  transactions_http_status: number | null;
+  drivers_fetched: number;
+  drivers_upserted: number;
+  transactions_fetched: number;
+  transactions_stored_new: number;
+  imported_count: number;
+  imported_total: string;
+  cursor_from: string | null;
+  cursor_to: string | null;
+  cursor_next_from: string | null;
+  detail: string;
+  started_at: string;
+  completed_at: string;
+  created_at: string;
+};
+
 export type BankSimPayout = {
   id: number;
   withdrawal_id: number;
@@ -234,6 +267,13 @@ export type ReconciliationSummary = {
       imported_total?: string;
       detail?: string;
     } | null;
+    last_category_sync?: {
+      ok: boolean;
+      checked_at: string;
+      fetched: number;
+      upserted: number;
+      http_status: number | null;
+    } | null;
     last_transaction_cursor?: {
       from: string;
       to: string;
@@ -242,6 +282,8 @@ export type ReconciliationSummary = {
     } | null;
     stored_driver_profiles?: number;
     stored_transactions?: number;
+    stored_categories?: number;
+    sync_runs_count?: number;
   };
   withdrawals: {
     count: number;
@@ -421,6 +463,25 @@ export async function syncLiveYandex(input?: { limit?: number; dry_run?: boolean
       idempotent: true
     }
   );
+}
+
+export async function syncYandexCategories() {
+  return request<{ connection: YandexConnection; categories_sync: Record<string, unknown> }>(
+    "/api/integrations/yandex/sync-categories/",
+    {
+      method: "POST",
+      body: JSON.stringify({}),
+      idempotent: true
+    }
+  );
+}
+
+export async function yandexCategories() {
+  return request<YandexCategory[]>("/api/integrations/yandex/categories/");
+}
+
+export async function yandexSyncRuns() {
+  return request<YandexSyncRun[]>("/api/integrations/yandex/sync-runs/");
 }
 
 export async function simulateYandexEvents(input: {

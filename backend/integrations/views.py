@@ -7,7 +7,7 @@ from rest_framework.views import APIView
 
 from wallet.models import WithdrawalRequest
 
-from .models import BankSimulatorPayout, ProviderConnection
+from .models import BankSimulatorPayout, ProviderConnection, YandexSyncRun, YandexTransactionCategory
 from .serializers import (
     BankSimulatorPayoutSerializer,
     ExternalEventSerializer,
@@ -16,6 +16,8 @@ from .serializers import (
     SimulateEventsSerializer,
     SubmitBankPayoutSerializer,
     UpdateBankPayoutStatusSerializer,
+    YandexSyncRunSerializer,
+    YandexTransactionCategorySerializer,
 )
 from .services import (
     build_reconciliation_report,
@@ -24,11 +26,10 @@ from .services import (
     import_unprocessed_events,
     live_sync_yandex_data,
     reconciliation_summary,
+    sync_yandex_transaction_categories,
     submit_withdrawal_to_bank_simulator,
     test_live_yandex_connection,
 )
-
-
 def _get_or_create_yandex_connection(user):
     mode = "live" if settings.YANDEX_MODE == "live" else "simulator"
     connection, _ = ProviderConnection.objects.get_or_create(
@@ -152,6 +153,47 @@ class SyncLiveYandexView(APIView):
             "sync": result,
         }
         return Response(payload, status=status.HTTP_200_OK)
+
+
+class SyncYandexCategoriesView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        connection = _get_or_create_yandex_connection(request.user)
+        result = sync_yandex_transaction_categories(connection=connection)
+        config = dict(connection.config or {})
+        config["last_category_sync"] = {
+            "ok": result.get("ok", False),
+            "checked_at": timezone.now().isoformat(),
+            "fetched": result.get("fetched", 0),
+            "upserted": result.get("upserted", 0),
+            "http_status": result.get("http_status"),
+        }
+        connection.config = config
+        connection.save(update_fields=["config"])
+        payload = {
+            "connection": ProviderConnectionSerializer(connection).data,
+            "categories_sync": result,
+        }
+        return Response(payload, status=status.HTTP_200_OK)
+
+
+class ListYandexCategoriesView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        connection = _get_or_create_yandex_connection(request.user)
+        rows = YandexTransactionCategory.objects.filter(connection=connection).order_by("name")
+        return Response(YandexTransactionCategorySerializer(rows, many=True).data, status=status.HTTP_200_OK)
+
+
+class ListYandexSyncRunsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        connection = _get_or_create_yandex_connection(request.user)
+        runs = YandexSyncRun.objects.filter(connection=connection).order_by("-created_at")[:100]
+        return Response(YandexSyncRunSerializer(runs, many=True).data, status=status.HTTP_200_OK)
 
 
 class ImportYandexEventsView(APIView):

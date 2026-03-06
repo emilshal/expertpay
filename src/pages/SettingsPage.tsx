@@ -88,10 +88,11 @@ export default function SettingsPage() {
             <div className="txMain">
               <div className="txTitle">Stored Yandex records</div>
               <div className="txSub">
-                Driver profiles {report.yandex.stored_driver_profiles ?? 0} | Transactions {report.yandex.stored_transactions ?? 0}
+                Driver profiles {report.yandex.stored_driver_profiles ?? 0} | Transactions{" "}
+                {report.yandex.stored_transactions ?? 0} | Categories {report.yandex.stored_categories ?? 0}
               </div>
             </div>
-            <div className="txAmount pos">{report.yandex.imported_events}</div>
+            <div className="txAmount pos">{report.yandex.sync_runs_count ?? 0}</div>
           </div>
 
           <div className="txRow" role="listitem">

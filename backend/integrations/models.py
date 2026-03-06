@@ -84,6 +84,64 @@ class YandexTransactionRecord(models.Model):
         return f"{self.connection_id}:{self.external_transaction_id}"
 
 
+class YandexTransactionCategory(models.Model):
+    connection = models.ForeignKey(ProviderConnection, on_delete=models.CASCADE, related_name="yandex_categories")
+    external_category_id = models.CharField(max_length=120)
+    code = models.CharField(max_length=120, blank=True)
+    name = models.CharField(max_length=200)
+    is_creatable = models.BooleanField(default=False)
+    is_enabled = models.BooleanField(default=True)
+    raw = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("connection", "external_category_id")
+        ordering = ["name"]
+
+    def __str__(self):
+        return f"{self.connection_id}:{self.external_category_id}:{self.name}"
+
+
+class YandexSyncRun(models.Model):
+    class Status(models.TextChoices):
+        OK = "ok", "OK"
+        PARTIAL = "partial", "Partial"
+        ERROR = "error", "Error"
+
+    class Trigger(models.TextChoices):
+        API = "api", "API"
+        SCHEDULER = "scheduler", "Scheduler"
+
+    connection = models.ForeignKey(ProviderConnection, on_delete=models.CASCADE, related_name="yandex_sync_runs")
+    trigger = models.CharField(max_length=20, choices=Trigger.choices, default=Trigger.API)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.ERROR)
+    dry_run = models.BooleanField(default=False)
+    full_sync = models.BooleanField(default=False)
+    drivers_http_status = models.IntegerField(null=True, blank=True)
+    transactions_http_status = models.IntegerField(null=True, blank=True)
+    drivers_fetched = models.IntegerField(default=0)
+    drivers_upserted = models.IntegerField(default=0)
+    transactions_fetched = models.IntegerField(default=0)
+    transactions_stored_new = models.IntegerField(default=0)
+    imported_count = models.IntegerField(default=0)
+    imported_total = models.DecimalField(max_digits=18, decimal_places=6, default=0)
+    cursor_from = models.DateTimeField(null=True, blank=True)
+    cursor_to = models.DateTimeField(null=True, blank=True)
+    cursor_next_from = models.DateTimeField(null=True, blank=True)
+    detail = models.CharField(max_length=255, blank=True)
+    error_details = models.JSONField(default=dict, blank=True)
+    started_at = models.DateTimeField()
+    completed_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.connection_id}:{self.status}:{self.created_at.isoformat()}"
+
+
 class BankSimulatorPayout(models.Model):
     class Status(models.TextChoices):
         ACCEPTED = "accepted", "Accepted"

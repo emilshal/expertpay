@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.urls import reverse
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -14,6 +15,8 @@ from .models import (
     ExternalEvent,
     ProviderConnection,
     YandexDriverProfile,
+    YandexSyncRun,
+    YandexTransactionCategory,
     YandexTransactionRecord,
 )
 from .services import live_sync_yandex_data
@@ -177,6 +180,54 @@ class YandexSimulatorApiTests(APITestCase):
     def test_sync_live_endpoint_validates_limit(self):
         response = self.client.post(reverse("yandex-sync-live"), data={"limit": 1000}, format="json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    @patch("integrations.views.sync_yandex_transaction_categories")
+    def test_sync_categories_endpoint(self, mocked_sync):
+        mocked_sync.return_value = {
+            "ok": True,
+            "configured": True,
+            "detail": "Category sync completed.",
+            "fetched": 3,
+            "upserted": 3,
+            "http_status": 200,
+            "errors": None,
+        }
+        response = self.client.post(reverse("yandex-sync-categories"), data={}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["categories_sync"]["ok"])
+        self.assertEqual(response.data["categories_sync"]["upserted"], 3)
+
+    def test_list_sync_runs_endpoint(self):
+        connect_response = self.client.post(reverse("yandex-connect"), data={}, format="json")
+        connection = ProviderConnection.objects.get(id=connect_response.data["id"])
+        YandexSyncRun.objects.create(
+            connection=connection,
+            trigger=YandexSyncRun.Trigger.API,
+            status=YandexSyncRun.Status.OK,
+            dry_run=True,
+            full_sync=False,
+            detail="test",
+            started_at=timezone.now(),
+            completed_at=timezone.now(),
+        )
+        response = self.client.get(reverse("yandex-sync-runs"))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+
+    def test_list_categories_endpoint(self):
+        connect_response = self.client.post(reverse("yandex-connect"), data={}, format="json")
+        connection = ProviderConnection.objects.get(id=connect_response.data["id"])
+        YandexTransactionCategory.objects.create(
+            connection=connection,
+            external_category_id="cat-1",
+            code="earning",
+            name="Earning",
+            is_creatable=True,
+            is_enabled=True,
+        )
+        response = self.client.get(reverse("yandex-categories"))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
 
 
 class BankSimulatorApiTests(APITestCase):

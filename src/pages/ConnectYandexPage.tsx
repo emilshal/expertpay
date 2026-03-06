@@ -5,6 +5,7 @@ import {
   reconcileYandex,
   simulateYandexEvents,
   syncLiveYandex,
+  syncYandexCategories,
   testYandexConnection,
   type YandexLiveSyncResult,
   type YandexConnectionTestResult,
@@ -105,6 +106,29 @@ export default function ConnectYandexPage() {
           }
         >
           Full Sync (Last 7 Days)
+        </button>
+
+        <button
+          className="transferSubmit"
+          type="button"
+          onClick={() =>
+            void run(async () => {
+              const result = await syncYandexCategories();
+              const syncResult = result.categories_sync as {
+                ok?: boolean;
+                fetched?: number;
+                upserted?: number;
+                detail?: string;
+              };
+              setMessage(
+                `${syncResult.detail ?? "Category sync finished"} (fetched ${syncResult.fetched ?? 0}, upserted ${
+                  syncResult.upserted ?? 0
+                })`
+              );
+            })
+          }
+        >
+          Sync Categories
         </button>
 
         <label className="transferField">
