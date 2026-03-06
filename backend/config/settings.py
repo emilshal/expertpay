@@ -2,6 +2,7 @@
 
 from datetime import timedelta
 import os
+import sys
 from pathlib import Path
 
 from corsheaders.defaults import default_headers
@@ -132,7 +133,26 @@ REST_FRAMEWORK = {
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
+    "DEFAULT_THROTTLE_CLASSES": (
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+        "rest_framework.throttling.ScopedRateThrottle",
+    ),
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": os.getenv("THROTTLE_ANON", "120/hour"),
+        "user": os.getenv("THROTTLE_USER", "1200/hour"),
+        "auth_otp_request": os.getenv("THROTTLE_AUTH_OTP_REQUEST", "30/hour"),
+        "auth_otp_verify": os.getenv("THROTTLE_AUTH_OTP_VERIFY", "60/hour"),
+        "money_write": os.getenv("THROTTLE_MONEY_WRITE", "240/hour"),
+        "money_status_write": os.getenv("THROTTLE_MONEY_STATUS_WRITE", "120/hour"),
+        "yandex_write": os.getenv("THROTTLE_YANDEX_WRITE", "180/hour"),
+        "yandex_read": os.getenv("THROTTLE_YANDEX_READ", "600/hour"),
+    },
 }
+
+if "test" in sys.argv:
+    # Keep CI tests deterministic and avoid throttle-related flakiness.
+    REST_FRAMEWORK["DEFAULT_THROTTLE_CLASSES"] = ()
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),

@@ -30,6 +30,8 @@ from .services import (
     submit_withdrawal_to_bank_simulator,
     test_live_yandex_connection,
 )
+
+
 def _get_or_create_yandex_connection(user):
     mode = "live" if settings.YANDEX_MODE == "live" else "simulator"
     connection, _ = ProviderConnection.objects.get_or_create(
@@ -61,6 +63,7 @@ class ConnectYandexView(APIView):
 
 class ListYandexEventsView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_scope = "yandex_read"
 
     def get(self, request):
         connection = _get_or_create_yandex_connection(request.user)
@@ -70,6 +73,7 @@ class ListYandexEventsView(APIView):
 
 class TestYandexConnectionView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_scope = "yandex_write"
 
     def post(self, request):
         connection = _get_or_create_yandex_connection(request.user)
@@ -96,6 +100,7 @@ class TestYandexConnectionView(APIView):
 
 class SimulateYandexEventsView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_scope = "yandex_write"
 
     def post(self, request):
         serializer = SimulateEventsSerializer(data=request.data)
@@ -118,6 +123,7 @@ class SimulateYandexEventsView(APIView):
 
 class SyncLiveYandexView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_scope = "yandex_write"
 
     def post(self, request):
         serializer = LiveYandexSyncSerializer(data=request.data)
@@ -157,6 +163,7 @@ class SyncLiveYandexView(APIView):
 
 class SyncYandexCategoriesView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_scope = "yandex_write"
 
     def post(self, request):
         connection = _get_or_create_yandex_connection(request.user)
@@ -180,6 +187,7 @@ class SyncYandexCategoriesView(APIView):
 
 class ListYandexCategoriesView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_scope = "yandex_read"
 
     def get(self, request):
         connection = _get_or_create_yandex_connection(request.user)
@@ -189,6 +197,7 @@ class ListYandexCategoriesView(APIView):
 
 class ListYandexSyncRunsView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_scope = "yandex_read"
 
     def get(self, request):
         connection = _get_or_create_yandex_connection(request.user)
@@ -198,6 +207,7 @@ class ListYandexSyncRunsView(APIView):
 
 class ImportYandexEventsView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_scope = "yandex_write"
 
     def post(self, request):
         connection = _get_or_create_yandex_connection(request.user)
@@ -207,6 +217,7 @@ class ImportYandexEventsView(APIView):
 
 class ReconcileYandexView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_scope = "yandex_read"
 
     def get(self, request):
         connection = _get_or_create_yandex_connection(request.user)

@@ -40,6 +40,7 @@ class FleetListView(generics.ListAPIView):
 
 class RequestFleetCodeView(APIView):
     permission_classes = [AllowAny]
+    throttle_scope = "auth_otp_request"
 
     def post(self, request):
         serializer = RequestCodeSerializer(data=request.data)
@@ -75,6 +76,7 @@ class RequestFleetCodeView(APIView):
 
 class VerifyFleetCodeView(APIView):
     permission_classes = [AllowAny]
+    throttle_scope = "auth_otp_verify"
 
     def post(self, request):
         serializer = VerifyCodeSerializer(data=request.data)

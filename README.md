@@ -129,6 +129,15 @@ YANDEX_API_KEY=...
 YANDEX_REQUEST_TIMEOUT_SECONDS=20
 YANDEX_MAX_RETRIES=3
 YANDEX_RETRY_BASE_SECONDS=0.5
+
+THROTTLE_ANON=120/hour
+THROTTLE_USER=1200/hour
+THROTTLE_AUTH_OTP_REQUEST=30/hour
+THROTTLE_AUTH_OTP_VERIFY=60/hour
+THROTTLE_MONEY_WRITE=240/hour
+THROTTLE_MONEY_STATUS_WRITE=120/hour
+THROTTLE_YANDEX_WRITE=180/hour
+THROTTLE_YANDEX_READ=600/hour
 ```
 
 ### Incremental live sync scheduler
@@ -151,6 +160,12 @@ Cron example (every 10 minutes):
 ```bash
 */10 * * * * cd /Users/emilshalamberidze/Desktop/expertpay/backend && /Users/emilshalamberidze/Desktop/expertpay/backend/.venv/bin/python manage.py sync_yandex_live --limit 100 >> /tmp/expertpay-sync.log 2>&1
 ```
+
+### CI
+GitHub Actions workflow runs on push/PR:
+- Django `check`
+- integrations tests (SQLite)
+- frontend build
 
 ### Simulator tests
 Run integration tests (requires DB connection). If Postgres is not running locally, run tests with SQLite override:

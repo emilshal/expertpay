@@ -87,6 +87,7 @@ def _execute_internal_transfer(*, sender, receiver, amount, note):
 
 class InternalTransferCreateView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_scope = "money_write"
 
     def post(self, request):
         request_id = request.headers.get("X-Request-ID", "")
@@ -154,6 +155,7 @@ class InternalTransferCreateView(APIView):
 
 class InternalTransferByBankView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_scope = "money_write"
 
     def post(self, request):
         request_id = request.headers.get("X-Request-ID", "")

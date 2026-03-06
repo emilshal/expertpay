@@ -123,6 +123,7 @@ class TransactionListView(APIView):
 
 class WithdrawalCreateView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_scope = "money_write"
 
     def post(self, request):
         request_id = request.headers.get("X-Request-ID", "")
@@ -226,6 +227,7 @@ class WithdrawalListView(generics.ListAPIView):
 
 class WithdrawalStatusUpdateView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_scope = "money_status_write"
 
     def patch(self, request, withdrawal_id):
         if not request.user.is_staff:
@@ -287,6 +289,7 @@ class WithdrawalStatusUpdateView(APIView):
 
 class WalletTopUpView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_scope = "money_write"
 
     def post(self, request):
         request_id = request.headers.get("X-Request-ID", "")
