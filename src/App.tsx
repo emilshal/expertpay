@@ -68,6 +68,7 @@ export default function App() {
         <Route path="/fleet-members" element={<FleetMembersPage />} />
         <Route path="/connect-yandex" element={<ConnectYandexPage />} />
         <Route path="/yandex-ops" element={<YandexOpsPage />} />
+        <Route path="/yandex-data" element={<YandexOpsPage />} />
         <Route path="/login" element={<Navigate to="/dashboard" replace />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>

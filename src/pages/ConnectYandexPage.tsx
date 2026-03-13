@@ -1,73 +1,126 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import {
-  connectYandex,
-  importYandexEvents,
-  reconcileYandex,
-  simulateYandexEvents,
+  reconciliationSummary,
   syncLiveYandex,
-  syncYandexCategories,
   testYandexConnection,
-  type YandexLiveSyncResult,
+  type ReconciliationSummary,
   type YandexConnectionTestResult,
-  yandexEvents
+  type YandexLiveSyncResult
 } from "../lib/api";
 
 export default function ConnectYandexPage() {
+  const [report, setReport] = useState<ReconciliationSummary | null>(null);
+  const [connectionTest, setConnectionTest] = useState<YandexConnectionTestResult | null>(null);
+  const [lastSync, setLastSync] = useState<YandexLiveSyncResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
-  const [mode, setMode] = useState<"steady" | "spiky" | "adjustment" | "duplicates" | "out_of_order">(
-    "steady"
-  );
-  const [count, setCount] = useState(10);
-  const [reconcile, setReconcile] = useState<{
-    imported_events: number;
-    imported_total: string;
-    ledger_total: string;
-    delta: string;
-    status: "OK" | "MISMATCH";
-  } | null>(null);
-  const [connectionTest, setConnectionTest] = useState<YandexConnectionTestResult | null>(null);
-  const [liveSync, setLiveSync] = useState<YandexLiveSyncResult | null>(null);
-  const [events, setEvents] = useState<Array<{ id: number; external_id: string; processed: boolean }>>([]);
+  const [error, setError] = useState("");
 
-  async function run(action: () => Promise<void>) {
+  async function loadOverview() {
     setLoading(true);
-    setMessage("");
+    setError("");
     try {
-      await action();
-    } catch (error) {
-      const text = error instanceof Error ? error.message : "Request failed";
-      setMessage(text);
+      const data = await reconciliationSummary();
+      setReport(data);
+    } catch {
+      setError("Unable to load Yandex overview.");
     } finally {
       setLoading(false);
     }
   }
 
+  useEffect(() => {
+    void loadOverview();
+  }, []);
+
+  async function run(action: () => Promise<void>) {
+    setLoading(true);
+    setError("");
+    setMessage("");
+    try {
+      await action();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Request failed.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const lastConnectionStatus = report?.yandex.last_connection_test;
+  const lastLiveSync = report?.yandex.last_live_sync;
+
   return (
     <section className="card">
-      <h1>Connect Yandex</h1>
-      <p>Test live credentials, then simulate/import/reconcile safely before moving full flows to live mode.</p>
-      <div style={{ marginBottom: "12px" }}>
-        <Link className="btn btnGhost" to="/yandex-ops">
-          Open Yandex Ops
-        </Link>
+      <div className="cardTitleRow">
+        <div>
+          <h1>Yandex Overview</h1>
+          <p className="statusHint" style={{ marginTop: "6px" }}>
+            Keep your Yandex fleet data connected and synced into ExpertPay.
+          </p>
+        </div>
+        <button className="btn btnGhost" type="button" onClick={() => void loadOverview()}>
+          {loading ? "Loading..." : "Refresh"}
+        </button>
       </div>
 
-      <div className="transferForm">
-        <button
-          className="transferSubmit"
-          type="button"
-          onClick={() =>
-            void run(async () => {
-              const data = await connectYandex();
-              setMessage(`Connected simulator: ${data.external_account_id}`);
-            })
-          }
-        >
-          {loading ? "Please wait..." : "Connect Yandex Simulator"}
-        </button>
+      {error ? <p className="statusError">{error}</p> : null}
+      {message ? <p className="statusHint">{message}</p> : null}
 
+      <div className="txList" role="list" style={{ marginTop: "14px" }}>
+        <div className="txRow" role="listitem">
+          <div className="txMain">
+            <div className="txTitle">Connection status</div>
+            <div className="txSub">
+              {lastConnectionStatus
+                ? `${lastConnectionStatus.checked_at} | HTTP ${lastConnectionStatus.http_status ?? "n/a"}`
+                : "No connection check yet"}
+            </div>
+          </div>
+          <div className={`txAmount ${lastConnectionStatus?.ok ? "pos" : "neg"}`}>
+            {lastConnectionStatus ? (lastConnectionStatus.ok ? "connected" : "attention") : "unknown"}
+          </div>
+        </div>
+
+        <div className="txRow" role="listitem">
+          <div className="txMain">
+            <div className="txTitle">Last sync</div>
+            <div className="txSub">
+              {lastLiveSync
+                ? `${lastLiveSync.checked_at} | Drivers ${lastLiveSync.drivers_fetched} | Transactions ${lastLiveSync.transactions_fetched}`
+                : "No live sync yet"}
+            </div>
+          </div>
+          <div className={`txAmount ${lastLiveSync?.ok ? "pos" : "neg"}`}>
+            {lastLiveSync ? (lastLiveSync.partial ? "partial" : lastLiveSync.ok ? "ok" : "error") : "pending"}
+          </div>
+        </div>
+
+        <div className="txRow" role="listitem">
+          <div className="txMain">
+            <div className="txTitle">Stored records</div>
+            <div className="txSub">
+              Drivers {report?.yandex.stored_driver_profiles ?? 0} | Transactions {report?.yandex.stored_transactions ?? 0}
+            </div>
+          </div>
+          <div className="txAmount pos">{report?.yandex.sync_runs_count ?? 0}</div>
+        </div>
+
+        <div className="txRow" role="listitem">
+          <div className="txMain">
+            <div className="txTitle">Ledger import total</div>
+            <div className="txSub">
+              Imported {report?.yandex.imported_total ?? "0.00"} / Ledger {report?.yandex.ledger_total ?? "0.00"}{" "}
+              {report?.currency ?? "GEL"}
+            </div>
+          </div>
+          <div className={`txAmount ${report?.yandex.status === "OK" ? "pos" : "neg"}`}>
+            {report?.yandex.status ?? "unknown"}
+          </div>
+        </div>
+      </div>
+
+      <div className="transferForm" style={{ marginTop: "18px" }}>
         <button
           className="transferSubmit"
           type="button"
@@ -75,15 +128,12 @@ export default function ConnectYandexPage() {
             void run(async () => {
               const result = await testYandexConnection();
               setConnectionTest(result.test);
-              if (result.test.ok) {
-                setMessage(`Live check passed (HTTP ${result.test.http_status ?? "n/a"})`);
-              } else {
-                setMessage(`Live check failed: ${result.test.detail}`);
-              }
+              setMessage(result.test.ok ? "Yandex connection refreshed." : result.test.detail);
+              await loadOverview();
             })
           }
         >
-          Test Live Credentials
+          Refresh Connection Status
         </button>
 
         <button
@@ -92,12 +142,13 @@ export default function ConnectYandexPage() {
           onClick={() =>
             void run(async () => {
               const result = await syncLiveYandex({ limit: 100, dry_run: false, full_sync: false });
-              setLiveSync(result.sync);
-              setMessage(result.sync.detail);
+              setLastSync(result.sync);
+              setMessage("Latest Yandex data synced.");
+              await loadOverview();
             })
           }
         >
-          Sync Live Data (Incremental)
+          Sync Latest Data
         </button>
 
         <button
@@ -106,242 +157,53 @@ export default function ConnectYandexPage() {
           onClick={() =>
             void run(async () => {
               const result = await syncLiveYandex({ limit: 100, dry_run: false, full_sync: true });
-              setLiveSync(result.sync);
-              setMessage(result.sync.detail);
+              setLastSync(result.sync);
+              setMessage("Full Yandex refresh completed.");
+              await loadOverview();
             })
           }
         >
-          Full Sync (Last 7 Days)
+          Full Refresh
         </button>
 
-        <button
-          className="transferSubmit"
-          type="button"
-          onClick={() =>
-            void run(async () => {
-              const result = await syncYandexCategories();
-              const syncResult = result.categories_sync as {
-                ok?: boolean;
-                fetched?: number;
-                upserted?: number;
-                detail?: string;
-              };
-              setMessage(
-                `${syncResult.detail ?? "Category sync finished"} (fetched ${syncResult.fetched ?? 0}, upserted ${
-                  syncResult.upserted ?? 0
-                })`
-              );
-            })
-          }
-        >
-          Sync Categories
-        </button>
-
-        <label className="transferField">
-          <span className="transferLabel">Mode</span>
-          <span className="transferSelectWrap">
-            <select
-              className="transferInput"
-              value={mode}
-              onChange={(event) => setMode(event.target.value as typeof mode)}
-            >
-              <option value="steady">steady</option>
-              <option value="spiky">spiky</option>
-              <option value="adjustment">adjustment</option>
-              <option value="duplicates">duplicates</option>
-              <option value="out_of_order">out_of_order</option>
-            </select>
-          </span>
-        </label>
-
-        <label className="transferField">
-          <span className="transferLabel">Event count</span>
-          <input
-            className="transferInput"
-            type="number"
-            min={1}
-            max={100}
-            value={count}
-            onChange={(event) => setCount(Number(event.target.value))}
-          />
-        </label>
-
-        <button
-          className="transferSubmit"
-          type="button"
-          onClick={() =>
-            void run(async () => {
-              const result = await simulateYandexEvents({ mode, count });
-              setMessage(`Simulated ${result.stored_count} events (${result.mode})`);
-            })
-          }
-        >
-          Simulate Events
-        </button>
-
-        <button
-          className="transferSubmit"
-          type="button"
-          onClick={() =>
-            void run(async () => {
-              const result = await importYandexEvents();
-              setMessage(`Imported ${result.imported_count} events for ${result.imported_total} GEL`);
-            })
-          }
-        >
-          Import To Ledger
-        </button>
-
-        <button
-          className="transferSubmit"
-          type="button"
-          onClick={() =>
-            void run(async () => {
-              const result = await reconcileYandex();
-              setReconcile(result);
-              setMessage(`Reconciliation: ${result.status}`);
-            })
-          }
-        >
-          Reconcile
-        </button>
-
-        <button
-          className="transferSubmit"
-          type="button"
-          onClick={() =>
-            void run(async () => {
-              const list = await yandexEvents();
-              setEvents(list.map((item) => ({ id: item.id, external_id: item.external_id, processed: item.processed })));
-              setMessage(`Loaded ${list.length} events`);
-            })
-          }
-        >
-          Load Events
-        </button>
+        <Link className="transferSubmit" to="/yandex-data">
+          View Yandex Data
+        </Link>
       </div>
 
-      {message ? <p className="statusHint">{message}</p> : null}
-
       {connectionTest ? (
-        <div className="txList" role="list">
+        <div className="txList" role="list" style={{ marginTop: "18px" }}>
           <div className="txRow" role="listitem">
             <div className="txMain">
-              <div className="txTitle">Live credential check</div>
+              <div className="txTitle">Latest connection refresh</div>
               <div className="txSub">{connectionTest.detail}</div>
             </div>
             <div className={`txAmount ${connectionTest.ok ? "pos" : "neg"}`}>
-              {connectionTest.ok ? "PASS" : "FAIL"}
+              {connectionTest.ok ? "ok" : "error"}
             </div>
-          </div>
-          <div className="txRow" role="listitem">
-            <div className="txMain">
-              <div className="txTitle">Mode</div>
-              <div className="txSub">{connectionTest.endpoint}</div>
-            </div>
-            <div className="txAmount">{connectionTest.mode}</div>
-          </div>
-          <div className="txRow" role="listitem">
-            <div className="txMain">
-              <div className="txTitle">HTTP status</div>
-            </div>
-            <div className="txAmount">{connectionTest.http_status ?? "n/a"}</div>
           </div>
         </div>
       ) : null}
 
-      {liveSync ? (
+      {lastSync ? (
         <div className="txList" role="list" style={{ marginTop: "12px" }}>
           <div className="txRow" role="listitem">
             <div className="txMain">
-              <div className="txTitle">Live sync status</div>
-              <div className="txSub">{liveSync.detail}</div>
+              <div className="txTitle">Latest sync result</div>
+              <div className="txSub">{lastSync.detail}</div>
             </div>
-            <div className={`txAmount ${liveSync.ok ? "pos" : "neg"}`}>
-              {liveSync.partial ? "PARTIAL" : liveSync.ok ? "OK" : "ERROR"}
+            <div className={`txAmount ${lastSync.ok ? "pos" : "neg"}`}>
+              {lastSync.partial ? "partial" : lastSync.ok ? "ok" : "error"}
             </div>
           </div>
           <div className="txRow" role="listitem">
             <div className="txMain">
-              <div className="txTitle">Drivers fetched</div>
-              <div className="txSub">
-                HTTP {liveSync.drivers.http_status ?? "n/a"} | Upserted {liveSync.drivers.upserted_profiles ?? 0}
-              </div>
+              <div className="txTitle">Imported to ExpertPay</div>
+              <div className="txSub">New events {lastSync.transactions.stored_new_events}</div>
             </div>
-            <div className="txAmount">{liveSync.drivers.fetched}</div>
-          </div>
-          <div className="txRow" role="listitem">
-            <div className="txMain">
-              <div className="txTitle">Transactions fetched</div>
-              <div className="txSub">HTTP {liveSync.transactions.http_status ?? "n/a"}</div>
-            </div>
-            <div className="txAmount">{liveSync.transactions.fetched}</div>
-          </div>
-          <div className="txRow" role="listitem">
-            <div className="txMain">
-              <div className="txTitle">Imported to ledger</div>
-              <div className="txSub">New external events: {liveSync.transactions.stored_new_events}</div>
-            </div>
-            <div className="txAmount pos">{liveSync.transactions.imported_total} GEL</div>
-          </div>
-          <div className="txRow" role="listitem">
-            <div className="txMain">
-              <div className="txTitle">Cursor</div>
-              <div className="txSub">
-                {liveSync.cursor ? `${liveSync.cursor.from} -> ${liveSync.cursor.to}` : "No cursor returned"}
-              </div>
-            </div>
-            <div className="txAmount">{liveSync.cursor?.next_from ?? "n/a"}</div>
+            <div className="txAmount pos">{lastSync.transactions.imported_total} GEL</div>
           </div>
         </div>
-      ) : null}
-
-      {reconcile ? (
-        <div className="txList" role="list">
-          <div className="txRow" role="listitem">
-            <div className="txMain">
-              <div className="txTitle">Imported events</div>
-              <div className="txSub">Status: {reconcile.status}</div>
-            </div>
-            <div className="txAmount pos">{reconcile.imported_events}</div>
-          </div>
-          <div className="txRow" role="listitem">
-            <div className="txMain">
-              <div className="txTitle">Imported total</div>
-            </div>
-            <div className="txAmount pos">{reconcile.imported_total} GEL</div>
-          </div>
-          <div className="txRow" role="listitem">
-            <div className="txMain">
-              <div className="txTitle">Ledger total</div>
-            </div>
-            <div className="txAmount pos">{reconcile.ledger_total} GEL</div>
-          </div>
-          <div className="txRow" role="listitem">
-            <div className="txMain">
-              <div className="txTitle">Delta</div>
-            </div>
-            <div className={`txAmount ${reconcile.delta === "0.00" ? "pos" : "neg"}`}>{reconcile.delta} GEL</div>
-          </div>
-        </div>
-      ) : null}
-
-      {events.length ? (
-        <>
-          <h2 className="h2" style={{ marginTop: "18px" }}>
-            Recent external events
-          </h2>
-          <div className="txList" role="list">
-            {events.slice(0, 10).map((event) => (
-              <div key={event.id} className="txRow" role="listitem">
-                <div className="txMain">
-                  <div className="txTitle">{event.external_id}</div>
-                  <div className="txSub">{event.processed ? "processed" : "pending"}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </>
       ) : null}
     </section>
   );

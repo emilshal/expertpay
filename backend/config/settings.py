@@ -179,6 +179,21 @@ YANDEX_REQUEST_TIMEOUT_SECONDS = int(os.getenv("YANDEX_REQUEST_TIMEOUT_SECONDS",
 YANDEX_MAX_RETRIES = int(os.getenv("YANDEX_MAX_RETRIES", "3"))
 YANDEX_RETRY_BASE_SECONDS = float(os.getenv("YANDEX_RETRY_BASE_SECONDS", "0.5"))
 
+BOG_ENABLED = os.getenv("BOG_ENABLED", "false").lower() == "true"
+BOG_TOKEN_URL = os.getenv(
+    "BOG_TOKEN_URL",
+    "https://account.bog.ge/auth/realms/bog/protocol/openid-connect/token",
+).strip()
+BOG_BASE_URL = os.getenv("BOG_BASE_URL", "https://api.businessonline.ge/api").rstrip("/")
+BOG_CLIENT_ID = os.getenv("BOG_CLIENT_ID", "").strip()
+BOG_CLIENT_SECRET = os.getenv("BOG_CLIENT_SECRET", "").strip()
+BOG_SCOPE = os.getenv("BOG_SCOPE", "").strip()
+BOG_REQUEST_TIMEOUT_SECONDS = int(os.getenv("BOG_REQUEST_TIMEOUT_SECONDS", "20"))
+BOG_SOURCE_ACCOUNT_NUMBER = os.getenv("BOG_SOURCE_ACCOUNT_NUMBER", "").strip()
+BOG_PAYER_INN = os.getenv("BOG_PAYER_INN", "").strip()
+BOG_PAYER_NAME = os.getenv("BOG_PAYER_NAME", "").strip()
+BOG_DOCUMENT_PREFIX = os.getenv("BOG_DOCUMENT_PREFIX", "EPW").strip() or "EPW"
+
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 SENTRY_DSN = os.getenv("SENTRY_DSN", "").strip()
 SENTRY_TRACES_SAMPLE_RATE = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.0"))

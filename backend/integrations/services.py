@@ -1,18 +1,22 @@
 from decimal import Decimal
 import random
 from datetime import timedelta
+import base64
 import json
 import time
+import uuid
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from django.conf import settings
+from django.core.cache import cache
 from django.db import transaction
 from django.db.models import Sum
 from django.utils.dateparse import parse_datetime
 from django.utils import timezone
 
+from ledger.models import LedgerAccount
 from ledger.services import (
     create_ledger_entry,
     ensure_opening_entry,
@@ -22,6 +26,7 @@ from ledger.services import (
 from wallet.models import Wallet, WithdrawalRequest
 
 from .models import (
+    BogPayout,
     BankSimulatorPayout,
     ExternalEvent,
     ProviderConnection,
@@ -43,6 +48,28 @@ def _yandex_missing_env_vars():
     return missing
 
 
+def _bog_missing_env_vars():
+    missing = []
+    if not settings.BOG_TOKEN_URL:
+        missing.append("BOG_TOKEN_URL")
+    if not settings.BOG_BASE_URL:
+        missing.append("BOG_BASE_URL")
+    if not settings.BOG_CLIENT_ID:
+        missing.append("BOG_CLIENT_ID")
+    if not settings.BOG_CLIENT_SECRET:
+        missing.append("BOG_CLIENT_SECRET")
+    return missing
+
+
+def _bog_missing_payout_env_vars():
+    missing = _bog_missing_env_vars()
+    if not settings.BOG_SOURCE_ACCOUNT_NUMBER:
+        missing.append("BOG_SOURCE_ACCOUNT_NUMBER")
+    if not settings.BOG_PAYER_INN:
+        missing.append("BOG_PAYER_INN")
+    return missing
+
+
 def _parse_json_response(response):
     raw_body = response.read().decode("utf-8", errors="replace")
     if not raw_body:
@@ -51,6 +78,223 @@ def _parse_json_response(response):
         return json.loads(raw_body)
     except json.JSONDecodeError:
         return {"raw": raw_body[:1000]}
+
+
+def test_live_bog_token_connection():
+    missing = _bog_missing_env_vars()
+    if missing:
+        return {
+            "ok": False,
+            "configured": False,
+            "provider": "bog",
+            "http_status": None,
+            "endpoint": settings.BOG_TOKEN_URL or "",
+            "detail": f"Missing BoG settings: {', '.join(missing)}",
+        }
+
+    credentials = f"{settings.BOG_CLIENT_ID}:{settings.BOG_CLIENT_SECRET}".encode("utf-8")
+    basic_auth = base64.b64encode(credentials).decode("ascii")
+    body = {
+        "grant_type": "client_credentials",
+        "client_id": settings.BOG_CLIENT_ID,
+        "client_secret": settings.BOG_CLIENT_SECRET,
+    }
+    if settings.BOG_SCOPE:
+        body["scope"] = settings.BOG_SCOPE
+
+    request = Request(
+        url=settings.BOG_TOKEN_URL,
+        method="POST",
+        data=urlencode(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Basic {basic_auth}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+
+    try:
+        with urlopen(request, timeout=settings.BOG_REQUEST_TIMEOUT_SECONDS) as response:
+            payload = _parse_json_response(response)
+            access_token = str(payload.get("access_token") or "")
+            ok = bool(access_token)
+            return {
+                "ok": ok,
+                "configured": True,
+                "provider": "bog",
+                "http_status": getattr(response, "status", 200),
+                "endpoint": settings.BOG_TOKEN_URL,
+                "detail": "Token request succeeded." if ok else "Token response did not include access_token.",
+                "response": {
+                    "token_type": payload.get("token_type"),
+                    "expires_in": payload.get("expires_in"),
+                    "scope": payload.get("scope"),
+                    "access_token_received": ok,
+                    "access_token": access_token if ok else "",
+                },
+            }
+    except HTTPError as exc:
+        parsed_body = {}
+        body_text = ""
+        try:
+            body_text = exc.read().decode("utf-8", errors="replace")
+            parsed_body = json.loads(body_text) if body_text else {}
+        except json.JSONDecodeError:
+            parsed_body = {"raw": body_text[:1000]} if body_text else {}
+        return {
+            "ok": False,
+            "configured": True,
+            "provider": "bog",
+            "http_status": exc.code,
+            "endpoint": settings.BOG_TOKEN_URL,
+            "detail": "BoG token request failed.",
+            "response": parsed_body,
+        }
+    except URLError as exc:
+        return {
+            "ok": False,
+            "configured": True,
+            "provider": "bog",
+            "http_status": None,
+            "endpoint": settings.BOG_TOKEN_URL,
+            "detail": f"BoG token request could not reach host: {exc.reason}",
+        }
+
+
+def _bog_cache_key(connection: ProviderConnection):
+    return f"integrations:bog:token:{connection.id}"
+
+
+def _request_new_bog_access_token():
+    result = test_live_bog_token_connection()
+    if not result.get("ok"):
+        raise ValueError(result.get("detail") or "BoG token request failed.")
+    response = result.get("response") or {}
+    access_token = str(response.get("access_token") or "")
+    if not access_token:
+        raise ValueError("BoG token response did not include access_token.")
+    expires_in = int(response.get("expires_in") or 0)
+    return {
+        "access_token": access_token,
+        "token_type": response.get("token_type") or "Bearer",
+        "expires_in": expires_in,
+        "scope": response.get("scope"),
+        "cached_until": (timezone.now() + timedelta(seconds=max(0, expires_in - 60))).isoformat(),
+    }
+
+
+def get_valid_bog_access_token(*, connection: ProviderConnection, force_refresh: bool = False):
+    cache_key = _bog_cache_key(connection)
+    if not force_refresh:
+        token_payload = cache.get(cache_key)
+        if isinstance(token_payload, dict):
+            cached_until = parse_datetime(str(token_payload.get("cached_until") or "")) if token_payload.get("cached_until") else None
+            if cached_until is not None and timezone.is_naive(cached_until):
+                cached_until = timezone.make_aware(cached_until, timezone.get_current_timezone())
+            if token_payload.get("access_token") and cached_until and cached_until > timezone.now():
+                return str(token_payload["access_token"])
+
+    token_payload = _request_new_bog_access_token()
+    ttl = max(60, int(token_payload.get("expires_in") or 1800) - 60)
+    cache.set(cache_key, token_payload, ttl)
+    return str(token_payload["access_token"])
+
+
+def _parse_bog_response(response):
+    raw_body = response.read().decode("utf-8", errors="replace")
+    if not raw_body:
+        return {}
+    try:
+        return json.loads(raw_body)
+    except json.JSONDecodeError:
+        return {"raw": raw_body[:2000]}
+
+
+def _bog_request(*, connection: ProviderConnection, method: str, endpoint: str, body=None, retry_on_401: bool = True):
+    token = get_valid_bog_access_token(connection=connection)
+    url = f"{settings.BOG_BASE_URL}{endpoint}"
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    request = Request(
+        url=url,
+        method=method,
+        data=data,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urlopen(request, timeout=settings.BOG_REQUEST_TIMEOUT_SECONDS) as response:
+            return {
+                "ok": 200 <= getattr(response, "status", 200) < 300,
+                "http_status": getattr(response, "status", 200),
+                "body": _parse_bog_response(response),
+            }
+    except HTTPError as exc:
+        parsed_body = {}
+        body_text = ""
+        try:
+            body_text = exc.read().decode("utf-8", errors="replace")
+            parsed_body = json.loads(body_text) if body_text else {}
+        except json.JSONDecodeError:
+            parsed_body = {"raw": body_text[:2000]} if body_text else {}
+        if exc.code == 401 and retry_on_401:
+            get_valid_bog_access_token(connection=connection, force_refresh=True)
+            return _bog_request(connection=connection, method=method, endpoint=endpoint, body=body, retry_on_401=False)
+        return {
+            "ok": False,
+            "http_status": exc.code,
+            "body": parsed_body,
+        }
+    except URLError as exc:
+        return {
+            "ok": False,
+            "http_status": None,
+            "body": {"error": str(exc.reason)},
+        }
+
+
+def _infer_bog_bank_code(bank_name: str):
+    normalized = (bank_name or "").strip().lower()
+    if normalized in {"bank of georgia", "bog"}:
+        return "BAGAGE22"
+    if normalized in {"tbc", "tbc bank"}:
+        return "TBCBGE22"
+    return ""
+
+
+def _build_bog_document_payload(*, withdrawal: WithdrawalRequest):
+    bank_account = withdrawal.bank_account
+    beneficiary_bank_code = _infer_bog_bank_code(bank_account.bank_name)
+    if not beneficiary_bank_code:
+        raise ValueError("Unsupported bank for automatic BoG payout submission.")
+    if not bank_account.beneficiary_inn:
+        raise ValueError("Bank account is missing beneficiary ID number.")
+
+    unique_id = str(uuid.uuid4())
+    dispatch_type = "BULK" if withdrawal.amount <= Decimal("10000.00") else "MT103"
+    document_no = f"{settings.BOG_DOCUMENT_PREFIX}{withdrawal.id}"[:16]
+    payload = [
+        {
+            "Nomination": (withdrawal.note or f"ExpertPay withdrawal #{withdrawal.id}")[:250],
+            "PayerInn": settings.BOG_PAYER_INN,
+            "PayerName": settings.BOG_PAYER_NAME or "",
+            "DispatchType": dispatch_type,
+            "ValueDate": timezone.now().isoformat(),
+            "IsSalary": False,
+            "UniqueId": unique_id,
+            "Amount": float(withdrawal.amount),
+            "DocumentNo": document_no,
+            "SourceAccountNumber": settings.BOG_SOURCE_ACCOUNT_NUMBER,
+            "BeneficiaryAccountNumber": bank_account.account_number,
+            "BeneficiaryBankCode": beneficiary_bank_code,
+            "BeneficiaryInn": bank_account.beneficiary_inn,
+            "CheckInn": beneficiary_bank_code == "BAGAGE22",
+            "BeneficiaryName": bank_account.beneficiary_name,
+            "AdditionalInformation": withdrawal.note or "",
+        }
+    ]
+    return payload, unique_id
 
 
 def _yandex_request(*, method: str, endpoint: str, query: dict | None = None, body: dict | None = None):
@@ -732,6 +976,226 @@ def _record_yandex_sync_run(*, connection, result, trigger, dry_run, full_sync, 
     )
 
 
+def _reverse_withdrawal_to_wallet(*, withdrawal: WithdrawalRequest, reason: str, idempotency_key: str, created_by):
+    with transaction.atomic():
+        locked_withdrawal = WithdrawalRequest.objects.select_for_update().select_related(
+            "wallet", "wallet__user"
+        ).get(id=withdrawal.id)
+        if locked_withdrawal.status == WithdrawalRequest.Status.FAILED:
+            return locked_withdrawal
+
+        wallet = locked_withdrawal.wallet
+        ledger_account = get_or_create_user_ledger_account(wallet.user, wallet.currency)
+        locked_ledger_account = LedgerAccount.objects.select_for_update().get(id=ledger_account.id)
+        current_balance = get_account_balance(locked_ledger_account, wallet.currency)
+
+        create_ledger_entry(
+            account=locked_ledger_account,
+            amount=locked_withdrawal.amount,
+            entry_type="withdrawal_reversal",
+            created_by=created_by,
+            reference_type="withdrawal",
+            reference_id=str(locked_withdrawal.id),
+            metadata={"description": reason},
+            idempotency_key=idempotency_key,
+        )
+        wallet.balance = current_balance + locked_withdrawal.amount
+        wallet.save(update_fields=["balance", "updated_at"])
+        locked_withdrawal.status = WithdrawalRequest.Status.FAILED
+        locked_withdrawal.save(update_fields=["status"])
+        return locked_withdrawal
+
+
+def submit_withdrawal_to_bog(*, connection: ProviderConnection, withdrawal: WithdrawalRequest):
+    if BogPayout.objects.filter(withdrawal=withdrawal, provider_unique_key__isnull=False).exists():
+        payout = BogPayout.objects.select_related("withdrawal").get(withdrawal=withdrawal)
+        return payout, False
+
+    missing = _bog_missing_payout_env_vars()
+    if missing:
+        raise ValueError(f"Missing BoG settings: {', '.join(missing)}")
+
+    request_payload, unique_id = _build_bog_document_payload(withdrawal=withdrawal)
+    response = _bog_request(
+        connection=connection,
+        method="POST",
+        endpoint="/documents/domestic",
+        body=request_payload,
+    )
+
+    body = response.get("body")
+    response_items = body if isinstance(body, list) else []
+    first_item = response_items[0] if response_items else {}
+    unique_key = first_item.get("UniqueKey")
+    result_code = first_item.get("ResultCode")
+    match_score = first_item.get("Match")
+
+    payout, created = BogPayout.objects.get_or_create(
+        withdrawal=withdrawal,
+        defaults={
+            "connection": connection,
+            "provider_unique_id": unique_id,
+            "provider_unique_key": unique_key,
+            "status": BogPayout.Status.ACCEPTED if response.get("ok") and unique_key else BogPayout.Status.FAILED,
+            "result_code": result_code,
+            "match_score": match_score,
+            "request_payload": request_payload[0],
+            "response_payload": first_item or body or {},
+        },
+    )
+
+    if not created:
+        payout.connection = connection
+        payout.provider_unique_id = payout.provider_unique_id or unique_id
+        payout.provider_unique_key = payout.provider_unique_key or unique_key
+        payout.request_payload = request_payload[0]
+        payout.response_payload = first_item or body or {}
+        payout.result_code = result_code
+        payout.match_score = match_score
+
+    if response.get("ok") and unique_key:
+        payout.status = BogPayout.Status.PROCESSING
+        payout.failure_reason = ""
+        payout.save(
+            update_fields=[
+                "connection",
+                "provider_unique_id",
+                "provider_unique_key",
+                "request_payload",
+                "response_payload",
+                "result_code",
+                "match_score",
+                "status",
+                "failure_reason",
+                "updated_at",
+            ]
+        )
+        if withdrawal.status == WithdrawalRequest.Status.PENDING:
+            withdrawal.status = WithdrawalRequest.Status.PROCESSING
+            withdrawal.save(update_fields=["status"])
+        return payout, created
+
+    failure_reason = f"BoG payout submission failed (HTTP {response.get('http_status') or 'n/a'})."
+    payout.status = BogPayout.Status.FAILED
+    payout.failure_reason = failure_reason
+    payout.save(
+        update_fields=[
+            "connection",
+            "provider_unique_id",
+            "provider_unique_key",
+            "request_payload",
+            "response_payload",
+            "result_code",
+            "match_score",
+            "status",
+            "failure_reason",
+            "updated_at",
+        ]
+    )
+    _reverse_withdrawal_to_wallet(
+        withdrawal=withdrawal,
+        reason="BoG payout submission failed, amount returned to wallet",
+        idempotency_key=f"bog:submit:reversal:{withdrawal.id}",
+        created_by=connection.user,
+    )
+    raise ValueError(failure_reason)
+
+
+def _map_bog_status(provider_status: str):
+    normalized = (provider_status or "").strip().lower()
+    if any(word in normalized for word in ("reject", "fail", "cancel", "error")):
+        return BogPayout.Status.FAILED
+    if any(word in normalized for word in ("complete", "execut", "success", "done", "finish")):
+        return BogPayout.Status.SETTLED
+    return BogPayout.Status.PROCESSING
+
+
+def sync_bog_payout_status(*, payout: BogPayout):
+    if not payout.provider_unique_key:
+        raise ValueError("BoG payout does not have a provider document key yet.")
+
+    response = _bog_request(
+        connection=payout.connection,
+        method="GET",
+        endpoint=f"/documents/status/{payout.provider_unique_key}",
+    )
+    body = response.get("body") if isinstance(response.get("body"), dict) else {}
+    provider_status = str(body.get("Status") or "")
+    mapped_status = _map_bog_status(provider_status)
+
+    with transaction.atomic():
+        locked_payout = BogPayout.objects.select_for_update().select_related(
+            "withdrawal", "withdrawal__wallet", "withdrawal__wallet__user", "connection"
+        ).get(id=payout.id)
+        locked_payout.provider_status = provider_status
+        locked_payout.result_code = body.get("ResultCode")
+        locked_payout.match_score = body.get("Match")
+        locked_payout.response_payload = body
+        locked_payout.last_status_checked_at = timezone.now()
+
+        if response.get("ok"):
+            locked_payout.status = mapped_status
+            locked_payout.failure_reason = ""
+        else:
+            locked_payout.status = BogPayout.Status.FAILED
+            locked_payout.failure_reason = f"BoG status sync failed (HTTP {response.get('http_status') or 'n/a'})."
+
+        locked_payout.save(
+            update_fields=[
+                "provider_status",
+                "result_code",
+                "match_score",
+                "response_payload",
+                "last_status_checked_at",
+                "status",
+                "failure_reason",
+                "updated_at",
+            ]
+        )
+
+        withdrawal = locked_payout.withdrawal
+        if locked_payout.status == BogPayout.Status.SETTLED:
+            if withdrawal.status != WithdrawalRequest.Status.COMPLETED:
+                withdrawal.status = WithdrawalRequest.Status.COMPLETED
+                withdrawal.save(update_fields=["status"])
+        elif locked_payout.status == BogPayout.Status.FAILED:
+            _reverse_withdrawal_to_wallet(
+                withdrawal=withdrawal,
+                reason="BoG payout failed, amount returned to wallet",
+                idempotency_key=f"bog:status:reversal:{locked_payout.id}",
+                created_by=locked_payout.connection.user,
+            )
+        else:
+            if withdrawal.status != WithdrawalRequest.Status.PROCESSING:
+                withdrawal.status = WithdrawalRequest.Status.PROCESSING
+                withdrawal.save(update_fields=["status"])
+
+        return locked_payout
+
+
+def sync_open_bog_payouts(*, connection: ProviderConnection):
+    payouts = list(
+        BogPayout.objects.select_related("withdrawal")
+        .filter(connection=connection, status__in=[BogPayout.Status.ACCEPTED, BogPayout.Status.PROCESSING])
+        .order_by("created_at")
+    )
+
+    updated = []
+    errors = []
+    for payout in payouts:
+        try:
+            updated.append(sync_bog_payout_status(payout=payout))
+        except ValueError as exc:
+            errors.append({"payout_id": payout.id, "detail": str(exc)})
+
+    return {
+        "checked_count": len(payouts),
+        "updated_count": len(updated),
+        "error_count": len(errors),
+        "errors": errors,
+    }
+
+
 def submit_withdrawal_to_bank_simulator(*, connection: ProviderConnection, withdrawal: WithdrawalRequest):
     payout, created = BankSimulatorPayout.objects.get_or_create(
         withdrawal=withdrawal,
@@ -884,6 +1348,19 @@ def build_reconciliation_report(*, user):
             BankSimulatorPayout.Status.REVERSED,
         ]
     }
+    bog_payouts = BogPayout.objects.filter(withdrawal__user=user)
+    bog_payouts_by_status = {
+        status_key: str(
+            bog_payouts.filter(status=status_key).aggregate(total=Sum("withdrawal__amount"))["total"] or Decimal("0.00")
+        )
+        for status_key in [
+            BogPayout.Status.ACCEPTED,
+            BogPayout.Status.PROCESSING,
+            BogPayout.Status.SETTLED,
+            BogPayout.Status.FAILED,
+            BogPayout.Status.REVERSED,
+        ]
+    }
 
     wallet_delta = ledger_balance - wallet.balance
 
@@ -906,6 +1383,10 @@ def build_reconciliation_report(*, user):
         "bank_simulator": {
             "count": payouts.count(),
             "totals_by_status": payouts_by_status,
+        },
+        "bog": {
+            "count": bog_payouts.count(),
+            "totals_by_status": bog_payouts_by_status,
         },
         "generated_at": timezone.now().isoformat(),
         "overall_status": "OK"

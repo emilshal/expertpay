@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import { reconciliationSummary, type ReconciliationSummary } from "../lib/api";
 
 export default function SettingsPage() {
@@ -28,14 +27,9 @@ export default function SettingsPage() {
     <section className="card">
       <div className="cardTitleRow">
         <h1>Reconciliation</h1>
-        <div style={{ display: "flex", gap: "8px" }}>
-          <button className="btn btnGhost" type="button" onClick={() => void loadReport()}>
-            {loading ? "Loading..." : "Refresh"}
-          </button>
-          <Link className="btn btnGhost" to="/fleet-members">
-            Fleet Members
-          </Link>
-        </div>
+        <button className="btn btnGhost" type="button" onClick={() => void loadReport()}>
+          {loading ? "Loading..." : "Refresh"}
+        </button>
       </div>
 
       {error ? <p className="statusError">{error}</p> : null}
@@ -55,9 +49,8 @@ export default function SettingsPage() {
           <div className="txRow" role="listitem">
             <div className="txMain">
               <div className="txTitle">Wallet vs Ledger</div>
-              <div className="txSub">
-                Wallet {report.wallet.wallet_balance} / Ledger {report.wallet.ledger_balance} {report.currency}
-              </div>
+              <div className="txSub">Wallet {report.wallet.wallet_balance} {report.currency}</div>
+              <div className="txSub">Ledger {report.wallet.ledger_balance} {report.currency}</div>
             </div>
             <div className={`txAmount ${report.wallet.status === "OK" ? "pos" : "neg"}`}>
               {report.wallet.delta}
@@ -67,9 +60,8 @@ export default function SettingsPage() {
           <div className="txRow" role="listitem">
             <div className="txMain">
               <div className="txTitle">Yandex import vs ledger</div>
-              <div className="txSub">
-                Imported {report.yandex.imported_total} / Ledger {report.yandex.ledger_total} {report.currency}
-              </div>
+              <div className="txSub">Imported {report.yandex.imported_total} {report.currency}</div>
+              <div className="txSub">Ledger {report.yandex.ledger_total} {report.currency}</div>
             </div>
             <div className={`txAmount ${report.yandex.status === "OK" ? "pos" : "neg"}`}>
               {report.yandex.delta}
@@ -79,11 +71,21 @@ export default function SettingsPage() {
           <div className="txRow" role="listitem">
             <div className="txMain">
               <div className="txTitle">Yandex last sync</div>
-              <div className="txSub">
-                {report.yandex.last_live_sync
-                  ? `${report.yandex.last_live_sync.checked_at} | Drivers fetched ${report.yandex.last_live_sync.drivers_fetched} | Drivers upserted ${report.yandex.last_live_sync.drivers_upserted ?? 0} | Transactions ${report.yandex.last_live_sync.transactions_fetched} | Imported ${report.yandex.last_live_sync.imported_count}`
-                  : "No live sync yet"}
-              </div>
+              {report.yandex.last_live_sync ? (
+                <>
+                  <div className="txSub">{report.yandex.last_live_sync.checked_at}</div>
+                  <div className="txSub">
+                    Drivers {report.yandex.last_live_sync.drivers_fetched} | Upserted{" "}
+                    {report.yandex.last_live_sync.drivers_upserted ?? 0}
+                  </div>
+                  <div className="txSub">
+                    Transactions {report.yandex.last_live_sync.transactions_fetched} | Imported{" "}
+                    {report.yandex.last_live_sync.imported_count}
+                  </div>
+                </>
+              ) : (
+                <div className="txSub">No live sync yet</div>
+              )}
             </div>
             <div className={`txAmount ${report.yandex.last_live_sync?.ok ? "pos" : "neg"}`}>
               {report.yandex.last_live_sync ? (report.yandex.last_live_sync.partial ? "PARTIAL" : report.yandex.last_live_sync.ok ? "OK" : "ERROR") : "N/A"}
@@ -93,10 +95,9 @@ export default function SettingsPage() {
           <div className="txRow" role="listitem">
             <div className="txMain">
               <div className="txTitle">Stored Yandex records</div>
-              <div className="txSub">
-                Driver profiles {report.yandex.stored_driver_profiles ?? 0} | Transactions{" "}
-                {report.yandex.stored_transactions ?? 0} | Categories {report.yandex.stored_categories ?? 0}
-              </div>
+              <div className="txSub">Driver profiles {report.yandex.stored_driver_profiles ?? 0}</div>
+              <div className="txSub">Transactions {report.yandex.stored_transactions ?? 0}</div>
+              <div className="txSub">Categories {report.yandex.stored_categories ?? 0}</div>
             </div>
             <div className="txAmount pos">{report.yandex.sync_runs_count ?? 0}</div>
           </div>
@@ -118,10 +119,10 @@ export default function SettingsPage() {
           <div className="txRow" role="listitem">
             <div className="txMain">
               <div className="txTitle">Withdrawals</div>
-              <div className="txSub">
-                Total {report.withdrawals.total} | Completed {report.withdrawals.completed_total} | Pending{" "}
-                {report.withdrawals.pending_total} | Failed {report.withdrawals.failed_total}
-              </div>
+              <div className="txSub">Total {report.withdrawals.total}</div>
+              <div className="txSub">Completed {report.withdrawals.completed_total}</div>
+              <div className="txSub">Pending {report.withdrawals.pending_total}</div>
+              <div className="txSub">Failed {report.withdrawals.failed_total}</div>
             </div>
             <div className="txAmount pos">{report.withdrawals.count}</div>
           </div>
@@ -129,14 +130,23 @@ export default function SettingsPage() {
           <div className="txRow" role="listitem">
             <div className="txMain">
               <div className="txTitle">Bank simulator payouts</div>
-              <div className="txSub">
-                Accepted {report.bank_simulator.totals_by_status.accepted ?? "0.00"} | Processing{" "}
-                {report.bank_simulator.totals_by_status.processing ?? "0.00"} | Settled{" "}
-                {report.bank_simulator.totals_by_status.settled ?? "0.00"} | Failed{" "}
-                {report.bank_simulator.totals_by_status.failed ?? "0.00"}
-              </div>
+              <div className="txSub">Accepted {report.bank_simulator.totals_by_status.accepted ?? "0.00"}</div>
+              <div className="txSub">Processing {report.bank_simulator.totals_by_status.processing ?? "0.00"}</div>
+              <div className="txSub">Settled {report.bank_simulator.totals_by_status.settled ?? "0.00"}</div>
+              <div className="txSub">Failed {report.bank_simulator.totals_by_status.failed ?? "0.00"}</div>
             </div>
             <div className="txAmount pos">{report.bank_simulator.count}</div>
+          </div>
+
+          <div className="txRow" role="listitem">
+            <div className="txMain">
+              <div className="txTitle">Bank of Georgia payouts</div>
+              <div className="txSub">Accepted {report.bog.totals_by_status.accepted ?? "0.00"}</div>
+              <div className="txSub">Processing {report.bog.totals_by_status.processing ?? "0.00"}</div>
+              <div className="txSub">Settled {report.bog.totals_by_status.settled ?? "0.00"}</div>
+              <div className="txSub">Failed {report.bog.totals_by_status.failed ?? "0.00"}</div>
+            </div>
+            <div className="txAmount pos">{report.bog.count}</div>
           </div>
         </div>
       ) : null}

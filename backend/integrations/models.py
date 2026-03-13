@@ -7,6 +7,7 @@ from wallet.models import WithdrawalRequest
 class ProviderConnection(models.Model):
     class Provider(models.TextChoices):
         YANDEX = "yandex", "Yandex"
+        BANK_OF_GEORGIA = "bog", "Bank of Georgia"
         BANK_SIMULATOR = "bank_sim", "Bank Simulator"
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="provider_connections")
@@ -166,3 +167,36 @@ class BankSimulatorPayout(models.Model):
 
     def __str__(self):
         return f"{self.provider_payout_id}:{self.status}"
+
+
+class BogPayout(models.Model):
+    class Status(models.TextChoices):
+        ACCEPTED = "accepted", "Accepted"
+        PROCESSING = "processing", "Processing"
+        SETTLED = "settled", "Settled"
+        FAILED = "failed", "Failed"
+        REVERSED = "reversed", "Reversed"
+
+    connection = models.ForeignKey(ProviderConnection, on_delete=models.CASCADE, related_name="bog_payouts")
+    withdrawal = models.OneToOneField(
+        WithdrawalRequest, on_delete=models.CASCADE, related_name="bog_payout"
+    )
+    provider_unique_id = models.CharField(max_length=120, blank=True)
+    provider_unique_key = models.BigIntegerField(null=True, blank=True, unique=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACCEPTED)
+    provider_status = models.CharField(max_length=120, blank=True)
+    result_code = models.IntegerField(null=True, blank=True)
+    match_score = models.DecimalField(max_digits=8, decimal_places=4, null=True, blank=True)
+    failure_reason = models.CharField(max_length=255, blank=True)
+    request_payload = models.JSONField(default=dict, blank=True)
+    response_payload = models.JSONField(default=dict, blank=True)
+    submitted_at = models.DateTimeField(auto_now_add=True)
+    last_status_checked_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"bog:{self.withdrawal_id}:{self.status}"

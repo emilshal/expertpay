@@ -1,27 +1,42 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   bankSimulatorPayouts,
+  bogPayouts,
   connectBankSimulator,
+  submitBogPayout,
   submitBankSimulatorPayout,
+  syncAllBogPayoutStatuses,
+  syncBogPayoutStatus,
   updateBankSimulatorPayoutStatus,
   withdrawalsList,
+  type BogPayout,
   type BankSimPayout,
   type WithdrawalItem
 } from "../lib/api";
 
 export default function PayoutsPage() {
   const [withdrawals, setWithdrawals] = useState<WithdrawalItem[]>([]);
+  const [bogItems, setBogItems] = useState<BogPayout[]>([]);
   const [payouts, setPayouts] = useState<BankSimPayout[]>([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
+
+  const bogByWithdrawal = useMemo(() => {
+    return new Map(bogItems.map((payout) => [payout.withdrawal_id, payout]));
+  }, [bogItems]);
 
   const payoutByWithdrawal = useMemo(() => {
     return new Map(payouts.map((payout) => [payout.withdrawal_id, payout]));
   }, [payouts]);
 
   async function refresh() {
-    const [withdrawalData, payoutData] = await Promise.all([withdrawalsList(), bankSimulatorPayouts()]);
+    const [withdrawalData, bogData, payoutData] = await Promise.all([
+      withdrawalsList(),
+      bogPayouts(),
+      bankSimulatorPayouts()
+    ]);
     setWithdrawals(withdrawalData);
+    setBogItems(bogData);
     setPayouts(payoutData);
   }
 
@@ -44,9 +59,97 @@ export default function PayoutsPage() {
 
   return (
     <section className="card">
-      <h1>Payouts Simulator</h1>
-      <p>Phase 2 bank-simulator lifecycle for withdrawals.</p>
+      <h1>Payouts</h1>
+      <p>Submit withdrawals to Bank of Georgia and track their status. The simulator stays below as a fallback.</p>
 
+      {message ? <p className="statusHint">{message}</p> : null}
+
+      <h2 className="h2" style={{ marginBottom: "10px", marginTop: "14px" }}>
+        Bank of Georgia
+      </h2>
+      <div style={{ marginTop: "10px", marginBottom: "14px" }}>
+        <button
+          className="btn btnSoft"
+          type="button"
+          onClick={() =>
+            void run(async () => {
+              const result = await syncAllBogPayoutStatuses();
+              setMessage(
+                `BoG sync checked ${result.checked_count} open payout(s), updated ${result.updated_count}, errors ${result.error_count}.`
+              );
+            })
+          }
+        >
+          Refresh all open BoG payouts
+        </button>
+      </div>
+      <div className="txList" role="list">
+        {withdrawals.length ? (
+          withdrawals.map((item) => {
+            const bogPayout = bogByWithdrawal.get(item.id);
+            const payout = payoutByWithdrawal.get(item.id);
+            return (
+              <div key={item.id} className="txRow" role="listitem">
+                <div className="txMain">
+                  <div className="txTitle">
+                    #{item.id} {item.amount} {item.currency}
+                  </div>
+                  <div className="txSub">
+                    withdrawal: {item.status}
+                    {bogPayout ? ` | BoG: ${bogPayout.status}` : ""}
+                  </div>
+                  {bogPayout?.failure_reason ? <div className="txSub">{bogPayout.failure_reason}</div> : null}
+                  {bogPayout?.provider_unique_key ? (
+                    <div className="txSub">document key: {bogPayout.provider_unique_key}</div>
+                  ) : null}
+                </div>
+                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                  {!bogPayout ? (
+                    <button
+                      className="btn btnSoft"
+                      type="button"
+                      onClick={() =>
+                        void run(async () => {
+                          await submitBogPayout(item.id);
+                          setMessage(`Submitted withdrawal #${item.id} to Bank of Georgia.`);
+                        })
+                      }
+                    >
+                      Submit to BoG
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        className="btn btnSoft"
+                        type="button"
+                        onClick={() =>
+                          void run(async () => {
+                            await syncBogPayoutStatus(bogPayout.id);
+                            setMessage(`Refreshed BoG payout #${bogPayout.id}.`);
+                          })
+                        }
+                      >
+                        Refresh status
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })
+        ) : (
+          <div className="txRow" role="listitem">
+            <div className="txMain">
+              <div className="txTitle">No withdrawals yet</div>
+              <div className="txSub">Create one from Dashboard withdraw modal first.</div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <h2 className="h2" style={{ marginBottom: "10px", marginTop: "22px" }}>
+        Simulator fallback
+      </h2>
       <div style={{ marginTop: "14px", marginBottom: "14px" }}>
         <button
           className="transferSubmit"
@@ -61,25 +164,19 @@ export default function PayoutsPage() {
           {loading ? "Please wait..." : "Connect Bank Simulator"}
         </button>
       </div>
-
-      {message ? <p className="statusHint">{message}</p> : null}
-
-      <h2 className="h2" style={{ marginBottom: "10px", marginTop: "14px" }}>
-        Withdrawals
-      </h2>
       <div className="txList" role="list">
         {withdrawals.length ? (
           withdrawals.map((item) => {
             const payout = payoutByWithdrawal.get(item.id);
             return (
-              <div key={item.id} className="txRow" role="listitem">
+              <div key={`sim-${item.id}`} className="txRow" role="listitem">
                 <div className="txMain">
                   <div className="txTitle">
                     #{item.id} {item.amount} {item.currency}
                   </div>
                   <div className="txSub">
                     withdrawal: {item.status}
-                    {payout ? ` | payout: ${payout.status}` : ""}
+                    {payout ? ` | simulator: ${payout.status}` : ""}
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "flex-end" }}>
@@ -143,14 +240,7 @@ export default function PayoutsPage() {
               </div>
             );
           })
-        ) : (
-          <div className="txRow" role="listitem">
-            <div className="txMain">
-              <div className="txTitle">No withdrawals yet</div>
-              <div className="txSub">Create one from Dashboard withdraw modal first.</div>
-            </div>
-          </div>
-        )}
+        ) : null}
       </div>
     </section>
   );

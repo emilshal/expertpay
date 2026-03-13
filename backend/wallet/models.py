@@ -17,6 +17,7 @@ class BankAccount(models.Model):
     bank_name = models.CharField(max_length=80)
     account_number = models.CharField(max_length=64)
     beneficiary_name = models.CharField(max_length=140)
+    beneficiary_inn = models.CharField(max_length=32, blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

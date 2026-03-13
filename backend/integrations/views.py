@@ -1,4 +1,5 @@
 from django.conf import settings
+from django.db.models import Count, Max, Q, Sum
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -9,17 +10,29 @@ from accounts.models import FleetPhoneBinding
 from accounts.roles import get_request_fleet_binding, meets_min_role
 from wallet.models import WithdrawalRequest
 
-from .models import BankSimulatorPayout, ProviderConnection, YandexSyncRun, YandexTransactionCategory
+from .models import (
+    BankSimulatorPayout,
+    BogPayout,
+    ProviderConnection,
+    YandexDriverProfile,
+    YandexSyncRun,
+    YandexTransactionCategory,
+    YandexTransactionRecord,
+)
 from .serializers import (
     BankSimulatorPayoutSerializer,
+    BogPayoutSerializer,
     ExternalEventSerializer,
     LiveYandexSyncSerializer,
     ProviderConnectionSerializer,
     SimulateEventsSerializer,
+    SyncBogPayoutStatusSerializer,
     SubmitBankPayoutSerializer,
     UpdateBankPayoutStatusSerializer,
+    YandexDriverProfileSerializer,
     YandexSyncRunSerializer,
     YandexTransactionCategorySerializer,
+    YandexTransactionRecordSerializer,
 )
 from .services import (
     build_reconciliation_report,
@@ -29,7 +42,11 @@ from .services import (
     live_sync_yandex_data,
     reconciliation_summary,
     sync_yandex_transaction_categories,
+    sync_bog_payout_status,
+    submit_withdrawal_to_bog,
     submit_withdrawal_to_bank_simulator,
+    sync_open_bog_payouts,
+    test_live_bog_token_connection,
     test_live_yandex_connection,
 )
 
@@ -53,6 +70,25 @@ def _get_or_create_bank_sim_connection(user):
         defaults={"status": "active", "config": {"mode": "simulator"}},
     )
     return connection
+
+
+def _get_or_create_bog_connection(user):
+    connection, _ = ProviderConnection.objects.get_or_create(
+        user=user,
+        provider=ProviderConnection.Provider.BANK_OF_GEORGIA,
+        external_account_id=f"bog-{user.username}",
+        defaults={"status": "active", "config": {"mode": "live"}},
+    )
+    return connection
+
+
+def _sanitize_bog_token_test_result(result: dict):
+    payload = dict(result or {})
+    response = dict(payload.get("response") or {})
+    response.pop("access_token", None)
+    if response:
+        payload["response"] = response
+    return payload
 
 
 class ConnectYandexView(APIView):
@@ -209,6 +245,115 @@ class ListYandexCategoriesView(APIView):
         return Response(YandexTransactionCategorySerializer(rows, many=True).data, status=status.HTTP_200_OK)
 
 
+class ListYandexDriversView(APIView):
+    permission_classes = [IsAuthenticated]
+    throttle_scope = "yandex_read"
+
+    def get(self, request):
+        connection = _get_or_create_yandex_connection(request.user)
+        rows = YandexDriverProfile.objects.filter(connection=connection).order_by("-updated_at")[:200]
+        return Response(YandexDriverProfileSerializer(rows, many=True).data, status=status.HTTP_200_OK)
+
+
+class ListYandexDriverSummariesView(APIView):
+    permission_classes = [IsAuthenticated]
+    throttle_scope = "yandex_read"
+
+    def get(self, request):
+        connection = _get_or_create_yandex_connection(request.user)
+        profiles = list(YandexDriverProfile.objects.filter(connection=connection).order_by("first_name", "last_name", "external_driver_id"))
+        tx_rows = (
+            YandexTransactionRecord.objects.filter(connection=connection)
+            .values("driver_external_id", "currency")
+            .annotate(
+                transaction_count=Count("id"),
+                total_earned=Sum("amount", filter=Q(amount__gt=0)),
+                total_deductions=Sum("amount", filter=Q(amount__lt=0)),
+                last_transaction_at=Max("event_at"),
+            )
+        )
+        tx_map = {
+            row["driver_external_id"]: row
+            for row in tx_rows
+            if row.get("driver_external_id")
+        }
+
+        payload = []
+        for profile in profiles:
+            stats = tx_map.get(profile.external_driver_id, {})
+            earned = stats.get("total_earned")
+            deductions = stats.get("total_deductions")
+            earned_str = str(earned or "0")
+            deductions_decimal = deductions or 0
+            deductions_str = str(abs(deductions_decimal))
+            net_total = (earned or 0) + (deductions or 0)
+            payload.append(
+                {
+                    "driver": YandexDriverProfileSerializer(profile).data,
+                    "summary": {
+                        "transaction_count": stats.get("transaction_count", 0),
+                        "total_earned": earned_str,
+                        "total_deductions": deductions_str,
+                        "net_total": str(net_total),
+                        "last_transaction_at": stats.get("last_transaction_at"),
+                        "currency": stats.get("currency") or "GEL",
+                    },
+                }
+            )
+        return Response(payload, status=status.HTTP_200_OK)
+
+
+class YandexDriverDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+    throttle_scope = "yandex_read"
+
+    def get(self, request, external_driver_id):
+        connection = _get_or_create_yandex_connection(request.user)
+        profile = YandexDriverProfile.objects.filter(
+            connection=connection, external_driver_id=external_driver_id
+        ).first()
+        if profile is None:
+            return Response({"detail": "Driver not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        tx_queryset = YandexTransactionRecord.objects.filter(
+            connection=connection,
+            driver_external_id=external_driver_id,
+        ).order_by("-event_at", "-created_at")
+        stats = tx_queryset.aggregate(
+            transaction_count=Count("id"),
+            total_earned=Sum("amount", filter=Q(amount__gt=0)),
+            total_deductions=Sum("amount", filter=Q(amount__lt=0)),
+            last_transaction_at=Max("event_at"),
+        )
+        total_earned = stats.get("total_earned") or 0
+        total_deductions = stats.get("total_deductions") or 0
+        currency = tx_queryset.values_list("currency", flat=True).first() or "GEL"
+
+        payload = {
+            "driver": YandexDriverProfileSerializer(profile).data,
+            "summary": {
+                "transaction_count": stats.get("transaction_count", 0),
+                "total_earned": str(total_earned),
+                "total_deductions": str(abs(total_deductions)),
+                "net_total": str(total_earned + total_deductions),
+                "last_transaction_at": stats.get("last_transaction_at"),
+                "currency": currency,
+            },
+            "recent_transactions": YandexTransactionRecordSerializer(tx_queryset[:100], many=True).data,
+        }
+        return Response(payload, status=status.HTTP_200_OK)
+
+
+class ListYandexTransactionsView(APIView):
+    permission_classes = [IsAuthenticated]
+    throttle_scope = "yandex_read"
+
+    def get(self, request):
+        connection = _get_or_create_yandex_connection(request.user)
+        rows = YandexTransactionRecord.objects.filter(connection=connection).order_by("-event_at", "-created_at")[:200]
+        return Response(YandexTransactionRecordSerializer(rows, many=True).data, status=status.HTTP_200_OK)
+
+
 class ListYandexSyncRunsView(APIView):
     permission_classes = [IsAuthenticated]
     throttle_scope = "yandex_read"
@@ -244,6 +389,120 @@ class ConnectBankSimulatorView(APIView):
     def post(self, request):
         connection = _get_or_create_bank_sim_connection(request.user)
         return Response(ProviderConnectionSerializer(connection).data, status=status.HTTP_201_CREATED)
+
+
+class TestBogTokenConnectionView(APIView):
+    permission_classes = [IsAuthenticated]
+    throttle_scope = "money_status_write"
+
+    def post(self, request):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.ADMIN):
+            return Response({"detail": "Only admin/owner can run Bank of Georgia connection tests."}, status=403)
+
+        connection = _get_or_create_bog_connection(request.user)
+        result = test_live_bog_token_connection()
+        sanitized_result = _sanitize_bog_token_test_result(result)
+
+        config = dict(connection.config or {})
+        config["mode"] = "live"
+        config["last_token_test"] = {
+            "ok": sanitized_result.get("ok", False),
+            "checked_at": timezone.now().isoformat(),
+            "http_status": sanitized_result.get("http_status"),
+            "detail": sanitized_result.get("detail", ""),
+            "access_token_received": bool((sanitized_result.get("response") or {}).get("access_token_received")),
+        }
+        connection.config = config
+        connection.status = "active" if sanitized_result.get("ok") else "error"
+        connection.save(update_fields=["config", "status"])
+
+        payload = {
+            "connection": ProviderConnectionSerializer(connection).data,
+            "test": sanitized_result,
+        }
+        return Response(payload, status=status.HTTP_200_OK)
+
+
+class ListBogPayoutsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        connection = _get_or_create_bog_connection(request.user)
+        payouts = connection.bog_payouts.select_related("withdrawal").order_by("-created_at")[:100]
+        return Response(BogPayoutSerializer(payouts, many=True).data, status=status.HTTP_200_OK)
+
+
+class SubmitBogPayoutView(APIView):
+    permission_classes = [IsAuthenticated]
+    throttle_scope = "money_status_write"
+
+    def post(self, request):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.OPERATOR):
+            return Response({"detail": "Only operator/admin/owner can submit BoG payouts."}, status=403)
+
+        serializer = SubmitBankPayoutSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        withdrawal_id = serializer.validated_data["withdrawal_id"]
+
+        withdrawal = WithdrawalRequest.objects.filter(id=withdrawal_id, user=request.user).first()
+        if withdrawal is None:
+            return Response({"detail": "Withdrawal not found."}, status=status.HTTP_404_NOT_FOUND)
+        if withdrawal.status in {WithdrawalRequest.Status.COMPLETED, WithdrawalRequest.Status.FAILED}:
+            return Response({"detail": "Withdrawal is already finalized."}, status=status.HTTP_400_BAD_REQUEST)
+
+        connection = _get_or_create_bog_connection(request.user)
+        try:
+            payout, created = submit_withdrawal_to_bog(connection=connection, withdrawal=withdrawal)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        payload = BogPayoutSerializer(payout).data
+        return Response(payload, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+
+class SyncBogPayoutStatusView(APIView):
+    permission_classes = [IsAuthenticated]
+    throttle_scope = "money_status_write"
+
+    def post(self, request, payout_id):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.OPERATOR):
+            return Response({"detail": "Only operator/admin/owner can refresh BoG payout status."}, status=403)
+
+        serializer = SyncBogPayoutStatusSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        connection = _get_or_create_bog_connection(request.user)
+        payout = (
+            BogPayout.objects.select_related("withdrawal")
+            .filter(id=payout_id, connection=connection, withdrawal__user=request.user)
+            .first()
+        )
+        if payout is None:
+            return Response({"detail": "BoG payout not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            payout = sync_bog_payout_status(payout=payout)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(BogPayoutSerializer(payout).data, status=status.HTTP_200_OK)
+
+
+class SyncAllBogPayoutStatusesView(APIView):
+    permission_classes = [IsAuthenticated]
+    throttle_scope = "money_status_write"
+
+    def post(self, request):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.OPERATOR):
+            return Response({"detail": "Only operator/admin/owner can refresh BoG payout statuses."}, status=403)
+
+        connection = _get_or_create_bog_connection(request.user)
+        result = sync_open_bog_payouts(connection=connection)
+        return Response(result, status=status.HTTP_200_OK)
 
 
 class ListBankSimulatorPayoutsView(APIView):

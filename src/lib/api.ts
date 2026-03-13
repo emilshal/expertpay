@@ -145,6 +145,7 @@ export type BankAccount = {
   bank_name: string;
   account_number: string;
   beneficiary_name: string;
+  beneficiary_inn: string;
   is_active: boolean;
   created_at: string;
 };
@@ -226,6 +227,53 @@ export type YandexCategory = {
   updated_at: string;
 };
 
+export type YandexDriverProfile = {
+  id: number;
+  external_driver_id: string;
+  first_name: string;
+  last_name: string;
+  phone_number: string;
+  status: string;
+  updated_at: string;
+};
+
+export type YandexTransactionRecord = {
+  id: number;
+  external_transaction_id: string;
+  driver_external_id: string;
+  event_at: string | null;
+  amount: string;
+  currency: string;
+  category: string;
+  direction: string;
+  updated_at: string;
+};
+
+export type YandexDriverSummary = {
+  driver: YandexDriverProfile;
+  summary: {
+    transaction_count: number;
+    total_earned: string;
+    total_deductions: string;
+    net_total: string;
+    last_transaction_at: string | null;
+    currency: string;
+  };
+};
+
+export type YandexDriverDetail = {
+  driver: YandexDriverProfile;
+  summary: {
+    transaction_count: number;
+    total_earned: string;
+    total_deductions: string;
+    net_total: string;
+    last_transaction_at: string | null;
+    currency: string;
+  };
+  recent_transactions: YandexTransactionRecord[];
+};
+
 export type YandexSyncRun = {
   id: number;
   trigger: "api" | "scheduler";
@@ -256,6 +304,24 @@ export type BankSimPayout = {
   status: "accepted" | "processing" | "settled" | "failed" | "reversed";
   failure_reason: string;
   metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type BogPayout = {
+  id: number;
+  withdrawal_id: number;
+  provider_unique_id: string;
+  provider_unique_key: number | null;
+  status: "accepted" | "processing" | "settled" | "failed" | "reversed";
+  provider_status: string;
+  result_code: number | null;
+  match_score: string | null;
+  failure_reason: string;
+  request_payload: Record<string, unknown>;
+  response_payload: Record<string, unknown>;
+  submitted_at: string;
+  last_status_checked_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -317,6 +383,10 @@ export type ReconciliationSummary = {
     failed_total: string;
   };
   bank_simulator: {
+    count: number;
+    totals_by_status: Record<string, string>;
+  };
+  bog: {
     count: number;
     totals_by_status: Record<string, string>;
   };
@@ -419,6 +489,7 @@ export async function createBankAccount(input: {
   bank_name: string;
   account_number: string;
   beneficiary_name: string;
+  beneficiary_inn?: string;
 }) {
   return request<BankAccount>("/api/wallet/bank-accounts/", {
     method: "POST",
@@ -521,6 +592,22 @@ export async function yandexCategories() {
   return request<YandexCategory[]>("/api/integrations/yandex/categories/");
 }
 
+export async function yandexDrivers() {
+  return request<YandexDriverProfile[]>("/api/integrations/yandex/drivers/");
+}
+
+export async function yandexDriverSummaries() {
+  return request<YandexDriverSummary[]>("/api/integrations/yandex/driver-summaries/");
+}
+
+export async function yandexDriverDetail(externalDriverId: string) {
+  return request<YandexDriverDetail>(`/api/integrations/yandex/drivers/${encodeURIComponent(externalDriverId)}/`);
+}
+
+export async function yandexTransactions() {
+  return request<YandexTransactionRecord[]>("/api/integrations/yandex/transactions/");
+}
+
 export async function yandexSyncRuns() {
   return request<YandexSyncRun[]>("/api/integrations/yandex/sync-runs/");
 }
@@ -566,6 +653,45 @@ export async function connectBankSimulator() {
     method: "POST",
     body: JSON.stringify({})
   });
+}
+
+export async function testBogToken() {
+  return request<{ connection: YandexConnection; test: Record<string, unknown> }>("/api/integrations/bog/test-token/", {
+    method: "POST",
+    body: JSON.stringify({}),
+    idempotent: true
+  });
+}
+
+export async function bogPayouts() {
+  return request<BogPayout[]>("/api/integrations/bog/payouts/");
+}
+
+export async function submitBogPayout(withdrawal_id: number) {
+  return request<BogPayout>("/api/integrations/bog/payouts/submit/", {
+    method: "POST",
+    body: JSON.stringify({ withdrawal_id }),
+    idempotent: true
+  });
+}
+
+export async function syncBogPayoutStatus(payout_id: number) {
+  return request<BogPayout>(`/api/integrations/bog/payouts/${payout_id}/status/`, {
+    method: "POST",
+    body: JSON.stringify({}),
+    idempotent: true
+  });
+}
+
+export async function syncAllBogPayoutStatuses() {
+  return request<{ checked_count: number; updated_count: number; error_count: number; errors: unknown[] }>(
+    "/api/integrations/bog/payouts/sync-all/",
+    {
+      method: "POST",
+      body: JSON.stringify({}),
+      idempotent: true
+    }
+  );
 }
 
 export async function bankSimulatorPayouts() {

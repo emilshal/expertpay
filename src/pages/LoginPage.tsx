@@ -12,7 +12,6 @@ export default function LoginPage({ onAuthenticated }: Props) {
   const [phone, setPhone] = useState("");
   const [challengeId, setChallengeId] = useState<number | null>(null);
   const [code, setCode] = useState("");
-  const [debugCode, setDebugCode] = useState("");
   const [loading, setLoading] = useState(false);
   const [fleetLoading, setFleetLoading] = useState(true);
   const [fleetLoadError, setFleetLoadError] = useState("");
@@ -51,7 +50,6 @@ export default function LoginPage({ onAuthenticated }: Props) {
     try {
       const data = await requestFleetCode({ fleet_name: selectedFleetName.trim(), phone_number: phone.trim() });
       setChallengeId(data.challenge_id);
-      setDebugCode(data.code ?? "");
     } catch (err) {
       const message = err instanceof Error ? err.message : "";
       if (message.includes("Wrong number")) {
@@ -112,7 +110,6 @@ export default function LoginPage({ onAuthenticated }: Props) {
                     setSelectedFleetName(fleet.name);
                     setChallengeId(null);
                     setCode("");
-                    setDebugCode("");
                     setError("");
                   }}
                 >
@@ -173,8 +170,6 @@ export default function LoginPage({ onAuthenticated }: Props) {
               </button>
             </>
           ) : null}
-
-          {debugCode ? <p className="statusHint">Test code: {debugCode}</p> : null}
           {error ? <p className="statusError">{error}</p> : null}
         </div>
       </section>

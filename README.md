@@ -74,11 +74,18 @@ This uses PostgreSQL on `localhost:5433` with:
 - `POST /api/integrations/yandex/sync-live/` (live driver + transaction sync into external events + ledger; supports incremental cursor sync)
 - `POST /api/integrations/yandex/sync-categories/` (sync transaction categories from Yandex)
 - `GET /api/integrations/yandex/categories/` (list synced categories)
+- `GET /api/integrations/yandex/drivers/` (list normalized synced driver profiles)
+- `GET /api/integrations/yandex/transactions/` (list normalized synced transaction records)
 - `GET /api/integrations/yandex/sync-runs/` (list Yandex sync history runs)
 - `GET /api/integrations/yandex/events/`
 - `POST /api/integrations/yandex/simulate-events/`
 - `POST /api/integrations/yandex/import/`
 - `GET /api/integrations/yandex/reconcile/`
+- `POST /api/integrations/bog/test-token/` (Bank of Georgia client-credentials token health check)
+- `GET /api/integrations/bog/payouts/`
+- `POST /api/integrations/bog/payouts/submit/`
+- `POST /api/integrations/bog/payouts/sync-all/`
+- `POST /api/integrations/bog/payouts/<id>/status/`
 - `POST /api/integrations/bank-sim/connect/`
 - `GET /api/integrations/bank-sim/payouts/`
 - `POST /api/integrations/bank-sim/payouts/submit/`
@@ -162,6 +169,32 @@ SENTRY_DSN=
 SENTRY_TRACES_SAMPLE_RATE=0.0
 ```
 
+### Bank of Georgia token test env
+Set these in `backend/.env` before running the BoG token health check:
+
+```env
+BOG_ENABLED=true
+BOG_TOKEN_URL=https://account.bog.ge/auth/realms/bog/protocol/openid-connect/token
+BOG_BASE_URL=https://api.businessonline.ge/api
+BOG_CLIENT_ID=...
+BOG_CLIENT_SECRET=...
+BOG_SCOPE=
+BOG_REQUEST_TIMEOUT_SECONDS=20
+```
+
+The token test endpoint only verifies that BoG returns an access token. It does not store the raw token.
+
+BoG payout submission additionally needs:
+
+```env
+BOG_SOURCE_ACCOUNT_NUMBER=...
+BOG_PAYER_INN=...
+BOG_PAYER_NAME=
+BOG_DOCUMENT_PREFIX=EXP
+```
+
+Saved beneficiary bank accounts also need a `beneficiary_inn` value for domestic transfer submission.
+
 ### Incremental live sync scheduler
 Manual run:
 
@@ -181,6 +214,14 @@ Cron example (every 10 minutes):
 
 ```bash
 */10 * * * * cd /Users/emilshalamberidze/Desktop/expertpay/backend && /Users/emilshalamberidze/Desktop/expertpay/backend/.venv/bin/python manage.py sync_yandex_live --limit 100 >> /tmp/expertpay-sync.log 2>&1
+```
+
+### BoG payout status polling
+Manual run:
+
+```bash
+cd backend
+../backend/.venv/bin/python manage.py sync_bog_payouts
 ```
 
 ### CI

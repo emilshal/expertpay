@@ -2,6 +2,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework import status
@@ -13,6 +14,7 @@ from wallet.models import BankAccount, Wallet, WithdrawalRequest
 
 from .models import (
     BankSimulatorPayout,
+    BogPayout,
     ExternalEvent,
     ProviderConnection,
     YandexDriverProfile,
@@ -20,7 +22,7 @@ from .models import (
     YandexTransactionCategory,
     YandexTransactionRecord,
 )
-from .services import live_sync_yandex_data
+from .services import get_valid_bog_access_token, live_sync_yandex_data
 
 
 User = get_user_model()
@@ -247,6 +249,139 @@ class YandexSimulatorApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data), 1)
 
+    def test_list_drivers_endpoint(self):
+        connect_response = self.client.post(reverse("yandex-connect"), data={}, format="json")
+        connection = ProviderConnection.objects.get(id=connect_response.data["id"])
+        YandexDriverProfile.objects.create(
+            connection=connection,
+            external_driver_id="drv-1",
+            first_name="Nika",
+            last_name="Beridze",
+            phone_number="+995598123123",
+            status="active",
+        )
+
+        response = self.client.get(reverse("yandex-drivers"))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["external_driver_id"], "drv-1")
+
+    def test_list_transactions_endpoint(self):
+        connect_response = self.client.post(reverse("yandex-connect"), data={}, format="json")
+        connection = ProviderConnection.objects.get(id=connect_response.data["id"])
+        event = ExternalEvent.objects.create(
+            connection=connection,
+            external_id="tx-1",
+            event_type="earning",
+            payload={"amount": "12.50"},
+            processed=True,
+        )
+        YandexTransactionRecord.objects.create(
+            connection=connection,
+            external_event=event,
+            external_transaction_id="tx-1",
+            driver_external_id="drv-1",
+            amount=Decimal("12.50"),
+            currency="GEL",
+            category="earning",
+            direction="credit",
+        )
+
+        response = self.client.get(reverse("yandex-transactions"))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["external_transaction_id"], "tx-1")
+
+    def test_list_driver_summaries_endpoint(self):
+        connect_response = self.client.post(reverse("yandex-connect"), data={}, format="json")
+        connection = ProviderConnection.objects.get(id=connect_response.data["id"])
+        YandexDriverProfile.objects.create(
+            connection=connection,
+            external_driver_id="drv-1",
+            first_name="Nika",
+            last_name="Beridze",
+            phone_number="+995598123123",
+            status="active",
+        )
+        event_one = ExternalEvent.objects.create(
+            connection=connection,
+            external_id="tx-earn",
+            event_type="earning",
+            payload={"amount": "12.50"},
+            processed=True,
+        )
+        event_two = ExternalEvent.objects.create(
+            connection=connection,
+            external_id="tx-deduct",
+            event_type="fine",
+            payload={"amount": "-2.00"},
+            processed=True,
+        )
+        YandexTransactionRecord.objects.create(
+            connection=connection,
+            external_event=event_one,
+            external_transaction_id="tx-earn",
+            driver_external_id="drv-1",
+            amount=Decimal("12.50"),
+            currency="GEL",
+            category="earning",
+            direction="credit",
+        )
+        YandexTransactionRecord.objects.create(
+            connection=connection,
+            external_event=event_two,
+            external_transaction_id="tx-deduct",
+            driver_external_id="drv-1",
+            amount=Decimal("-2.00"),
+            currency="GEL",
+            category="penalty",
+            direction="debit",
+        )
+
+        response = self.client.get(reverse("yandex-driver-summaries"))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["driver"]["external_driver_id"], "drv-1")
+        self.assertEqual(response.data[0]["summary"]["transaction_count"], 2)
+        self.assertEqual(Decimal(response.data[0]["summary"]["total_earned"]), Decimal("12.50"))
+        self.assertEqual(Decimal(response.data[0]["summary"]["total_deductions"]), Decimal("2.00"))
+        self.assertEqual(Decimal(response.data[0]["summary"]["net_total"]), Decimal("10.50"))
+
+    def test_driver_detail_endpoint(self):
+        connect_response = self.client.post(reverse("yandex-connect"), data={}, format="json")
+        connection = ProviderConnection.objects.get(id=connect_response.data["id"])
+        YandexDriverProfile.objects.create(
+            connection=connection,
+            external_driver_id="drv-99",
+            first_name="Ana",
+            last_name="Kapanadze",
+            phone_number="+995555111222",
+            status="active",
+        )
+        event = ExternalEvent.objects.create(
+            connection=connection,
+            external_id="tx-99",
+            event_type="earning",
+            payload={"amount": "50.00"},
+            processed=True,
+        )
+        YandexTransactionRecord.objects.create(
+            connection=connection,
+            external_event=event,
+            external_transaction_id="tx-99",
+            driver_external_id="drv-99",
+            amount=Decimal("50.00"),
+            currency="GEL",
+            category="earning",
+            direction="credit",
+        )
+
+        response = self.client.get(reverse("yandex-driver-detail", kwargs={"external_driver_id": "drv-99"}))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["driver"]["external_driver_id"], "drv-99")
+        self.assertEqual(response.data["summary"]["transaction_count"], 1)
+        self.assertEqual(len(response.data["recent_transactions"]), 1)
+
 
 class BankSimulatorApiTests(APITestCase):
     def setUp(self):
@@ -364,8 +499,241 @@ class BankSimulatorApiTests(APITestCase):
         self.assertIn("yandex", response.data)
         self.assertIn("withdrawals", response.data)
         self.assertIn("bank_simulator", response.data)
+        self.assertIn("bog", response.data)
         self.assertEqual(response.data["withdrawals"]["count"], 1)
         self.assertEqual(response.data["bank_simulator"]["count"], 1)
+
+
+class BogTokenApiTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="bog_user", password="pass1234")
+        self.client.force_authenticate(self.user)
+
+    @patch("integrations.views.test_live_bog_token_connection")
+    def test_test_token_endpoint_updates_connection_status(self, mocked_test):
+        mocked_test.return_value = {
+            "ok": True,
+            "configured": True,
+            "provider": "bog",
+            "http_status": 200,
+            "endpoint": "https://account.bog.ge/auth/realms/bog/protocol/openid-connect/token",
+            "detail": "Token request succeeded.",
+            "response": {
+                "token_type": "Bearer",
+                "expires_in": 300,
+                "scope": None,
+                "access_token_received": True,
+            },
+        }
+
+        response = self.client.post(reverse("bog-test-token"), data={}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["test"]["ok"])
+        self.assertTrue(response.data["test"]["response"]["access_token_received"])
+        self.assertNotIn("access_token", response.data["test"]["response"])
+
+        connection = ProviderConnection.objects.get(
+            user=self.user, provider=ProviderConnection.Provider.BANK_OF_GEORGIA
+        )
+        self.assertEqual(connection.status, "active")
+        self.assertIn("last_token_test", connection.config)
+        self.assertEqual(connection.config["last_token_test"]["http_status"], 200)
+
+    @patch("integrations.views.test_live_bog_token_connection")
+    def test_test_token_endpoint_marks_error_on_failure(self, mocked_test):
+        mocked_test.return_value = {
+            "ok": False,
+            "configured": True,
+            "provider": "bog",
+            "http_status": 401,
+            "endpoint": "https://account.bog.ge/auth/realms/bog/protocol/openid-connect/token",
+            "detail": "BoG token request failed.",
+            "response": {"error": "invalid_client"},
+        }
+
+        response = self.client.post(reverse("bog-test-token"), data={}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["test"]["ok"])
+        self.assertEqual(response.data["test"]["http_status"], 401)
+
+        connection = ProviderConnection.objects.get(
+            user=self.user, provider=ProviderConnection.Provider.BANK_OF_GEORGIA
+        )
+        self.assertEqual(connection.status, "error")
+
+    @patch("integrations.services.test_live_bog_token_connection")
+    def test_bog_access_token_is_cached_until_expiry_window(self, mocked_test):
+        connection = ProviderConnection.objects.create(
+            user=self.user,
+            provider=ProviderConnection.Provider.BANK_OF_GEORGIA,
+            external_account_id="bog-cache-user",
+            status="active",
+            config={"mode": "live"},
+        )
+        cache.clear()
+        mocked_test.return_value = {
+            "ok": True,
+            "configured": True,
+            "provider": "bog",
+            "http_status": 200,
+            "endpoint": "https://account.bog.ge/auth/realms/bog/protocol/openid-connect/token",
+            "detail": "Token request succeeded.",
+            "response": {
+                "token_type": "Bearer",
+                "expires_in": 1800,
+                "scope": "cib-scope",
+                "access_token_received": True,
+                "access_token": "cached-token-value",
+            },
+        }
+
+        first = get_valid_bog_access_token(connection=connection)
+        second = get_valid_bog_access_token(connection=connection)
+
+        self.assertEqual(first, "cached-token-value")
+        self.assertEqual(second, "cached-token-value")
+        self.assertEqual(mocked_test.call_count, 1)
+
+
+class BogPayoutApiTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="bog_payout_user", password="pass1234")
+        self.client.force_authenticate(self.user)
+        self.fleet, _ = Fleet.objects.get_or_create(name="New Tech")
+        FleetPhoneBinding.objects.create(
+            fleet=self.fleet,
+            user=self.user,
+            phone_number="598950001",
+            role=FleetPhoneBinding.Role.ADMIN,
+            is_active=True,
+        )
+        self.wallet, _ = Wallet.objects.get_or_create(user=self.user)
+        self.wallet.balance = Decimal("150.00")
+        self.wallet.save(update_fields=["balance"])
+        self.bank_account = BankAccount.objects.create(
+            user=self.user,
+            bank_name="Bank of Georgia",
+            account_number="GE64BG00000000000002",
+            beneficiary_name="Nika Beridze",
+            beneficiary_inn="01001010101",
+        )
+
+    def _create_withdrawal(self, amount="25.00"):
+        response = self.client.post(
+            reverse("withdrawal-create"),
+            data={"bank_account_id": self.bank_account.id, "amount": amount, "note": "bog payout"},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+            HTTP_IDEMPOTENCY_KEY=f"withdrawal-bog-{amount}",
+            HTTP_X_REQUEST_ID=f"req-bog-{amount}",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        return WithdrawalRequest.objects.get(id=response.data["id"])
+
+    @patch("integrations.services._bog_request")
+    @patch("integrations.services._bog_missing_payout_env_vars")
+    def test_submit_bog_payout_moves_withdrawal_to_processing(self, mocked_missing, mocked_request):
+        mocked_missing.return_value = []
+        mocked_request.return_value = {
+            "ok": True,
+            "http_status": 200,
+            "body": [{"UniqueKey": 345678, "ResultCode": 0, "Match": 1}],
+        }
+
+        withdrawal = self._create_withdrawal()
+        response = self.client.post(
+            reverse("bog-submit"),
+            data={"withdrawal_id": withdrawal.id},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["status"], "processing")
+        self.assertEqual(response.data["provider_unique_key"], 345678)
+        withdrawal.refresh_from_db()
+        self.assertEqual(withdrawal.status, WithdrawalRequest.Status.PROCESSING)
+        self.assertEqual(BogPayout.objects.count(), 1)
+
+    @patch("integrations.services._bog_request")
+    @patch("integrations.services._bog_missing_payout_env_vars")
+    def test_failed_bog_status_reverses_wallet_balance(self, mocked_missing, mocked_request):
+        mocked_missing.return_value = []
+        mocked_request.side_effect = [
+            {
+                "ok": True,
+                "http_status": 200,
+                "body": [{"UniqueKey": 999111, "ResultCode": 0, "Match": 1}],
+            },
+            {
+                "ok": True,
+                "http_status": 200,
+                "body": {"Status": "Rejected", "ResultCode": 12, "Match": 1},
+            },
+        ]
+
+        withdrawal = self._create_withdrawal(amount="30.00")
+        submit_response = self.client.post(
+            reverse("bog-submit"),
+            data={"withdrawal_id": withdrawal.id},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+        payout_id = submit_response.data["id"]
+
+        status_response = self.client.post(
+            reverse("bog-status-sync", kwargs={"payout_id": payout_id}),
+            data={},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+
+        self.assertEqual(status_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(status_response.data["status"], "failed")
+        withdrawal.refresh_from_db()
+        self.assertEqual(withdrawal.status, WithdrawalRequest.Status.FAILED)
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.balance, Decimal("150.00"))
+
+    @patch("integrations.services._bog_request")
+    @patch("integrations.services._bog_missing_payout_env_vars")
+    def test_sync_all_bog_statuses_endpoint_checks_open_payouts(self, mocked_missing, mocked_request):
+        mocked_missing.return_value = []
+        mocked_request.side_effect = [
+            {
+                "ok": True,
+                "http_status": 200,
+                "body": [{"UniqueKey": 222333, "ResultCode": 0, "Match": 1}],
+            },
+            {
+                "ok": True,
+                "http_status": 200,
+                "body": {"Status": "Completed", "ResultCode": 0, "Match": 1},
+            },
+        ]
+
+        withdrawal = self._create_withdrawal(amount="40.00")
+        self.client.post(
+            reverse("bog-submit"),
+            data={"withdrawal_id": withdrawal.id},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+
+        response = self.client.post(
+            reverse("bog-sync-all"),
+            data={},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["checked_count"], 1)
+        self.assertEqual(response.data["updated_count"], 1)
+        self.assertEqual(response.data["error_count"], 0)
+
+        withdrawal.refresh_from_db()
+        self.assertEqual(withdrawal.status, WithdrawalRequest.Status.COMPLETED)
 
 
 class YandexLiveSyncServiceTests(APITestCase):

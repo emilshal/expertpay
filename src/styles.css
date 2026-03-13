@@ -85,7 +85,7 @@ body::after {
   display: flex;
   gap: 16px;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: space-between;
   padding-top: calc(16px + env(safe-area-inset-top));
   padding-right: calc(20px + env(safe-area-inset-right));
   padding-bottom: 16px;
@@ -101,6 +101,7 @@ body::after {
   align-items: center;
   gap: 10px;
   color: var(--text-0);
+  text-decoration: none;
 }
 
 .brandMark {
@@ -118,6 +119,137 @@ body::after {
   font-size: 14px;
   font-weight: 800;
   letter-spacing: 0.3px;
+}
+
+.brandMeta {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.menuToggle {
+  width: 42px;
+  height: 42px;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 0;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-0);
+  box-shadow: inset 0 0 0 1px rgba(180, 205, 255, 0.08);
+  cursor: pointer;
+}
+
+.menuToggle span {
+  width: 18px;
+  height: 1.8px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.menuOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 5, 12, 0.38);
+  backdrop-filter: blur(4px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease;
+  z-index: 9;
+}
+
+.menuOverlayOpen {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.sideMenu {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(320px, 88vw);
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 18px;
+  padding-top: calc(22px + env(safe-area-inset-top));
+  padding-right: calc(18px + env(safe-area-inset-right));
+  padding-bottom: calc(20px + env(safe-area-inset-bottom));
+  padding-left: 18px;
+  background: linear-gradient(180deg, rgba(18, 24, 38, 0.96), rgba(9, 14, 24, 0.98));
+  box-shadow: -24px 0 60px rgba(0, 0, 0, 0.42), inset 1px 0 0 rgba(180, 205, 255, 0.08);
+  transform: translateX(105%);
+  transition: transform 180ms ease;
+  z-index: 10;
+}
+
+.sideMenuOpen {
+  transform: translateX(0);
+}
+
+.sideMenuHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sideMenuTitle {
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--text-0);
+}
+
+.sideMenuSub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.sideMenuClose {
+  border: 0;
+  background: transparent;
+  color: var(--text-0);
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sideMenuNav {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.sideMenuLink {
+  display: block;
+  padding: 12px 14px;
+  border-radius: 14px;
+  color: var(--text-0);
+  text-decoration: none;
+  background: rgba(255, 255, 255, 0.04);
+  box-shadow: inset 0 0 0 1px rgba(180, 205, 255, 0.05);
+  transition: background 120ms ease, transform 120ms ease;
+}
+
+.sideMenuLink:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.sideMenuLink:active {
+  transform: translateY(1px);
+}
+
+.sideMenuLinkActive {
+  background: rgba(79, 97, 255, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(122, 134, 255, 0.3);
+}
+
+.sideMenuLogout {
+  width: 100%;
 }
 
 .main {
@@ -459,9 +591,22 @@ body::after {
   background: rgba(10, 15, 29, 0.35);
 }
 
+.txRowButton {
+  width: 100%;
+  border: 0;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
+
+.txRowButton:hover {
+  background: rgba(18, 27, 49, 0.52);
+}
+
 .txMain {
   display: grid;
   gap: 4px;
+  min-width: 0;
 }
 
 .txTitle {
@@ -471,11 +616,13 @@ body::after {
 .txSub {
   font-size: 12px;
   color: var(--text-2);
+  overflow-wrap: anywhere;
 }
 
 .txAmount {
   font-variant-numeric: tabular-nums;
   font-weight: 700;
+  flex-shrink: 0;
 }
 
 .txAmount.pos {
@@ -824,6 +971,20 @@ select.transferInput {
 }
 
 @media (max-width: 640px) {
+  .cardTitleRow {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .txRow {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .txAmount {
+    align-self: flex-start;
+  }
+
   .dashboardQuickRow {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }

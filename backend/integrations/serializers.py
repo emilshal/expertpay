@@ -2,10 +2,13 @@ from rest_framework import serializers
 
 from .models import (
     BankSimulatorPayout,
+    BogPayout,
     ExternalEvent,
     ProviderConnection,
+    YandexDriverProfile,
     YandexSyncRun,
     YandexTransactionCategory,
+    YandexTransactionRecord,
 )
 
 
@@ -52,8 +55,36 @@ class BankSimulatorPayoutSerializer(serializers.ModelSerializer):
         )
 
 
+class BogPayoutSerializer(serializers.ModelSerializer):
+    withdrawal_id = serializers.IntegerField(source="withdrawal.id", read_only=True)
+
+    class Meta:
+        model = BogPayout
+        fields = (
+            "id",
+            "withdrawal_id",
+            "provider_unique_id",
+            "provider_unique_key",
+            "status",
+            "provider_status",
+            "result_code",
+            "match_score",
+            "failure_reason",
+            "request_payload",
+            "response_payload",
+            "submitted_at",
+            "last_status_checked_at",
+            "created_at",
+            "updated_at",
+        )
+
+
 class SubmitBankPayoutSerializer(serializers.Serializer):
     withdrawal_id = serializers.IntegerField(min_value=1)
+
+
+class SyncBogPayoutStatusSerializer(serializers.Serializer):
+    payout_id = serializers.IntegerField(min_value=1, required=False)
 
 
 class UpdateBankPayoutStatusSerializer(serializers.Serializer):
@@ -79,6 +110,36 @@ class YandexTransactionCategorySerializer(serializers.ModelSerializer):
             "name",
             "is_creatable",
             "is_enabled",
+            "updated_at",
+        )
+
+
+class YandexDriverProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = YandexDriverProfile
+        fields = (
+            "id",
+            "external_driver_id",
+            "first_name",
+            "last_name",
+            "phone_number",
+            "status",
+            "updated_at",
+        )
+
+
+class YandexTransactionRecordSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = YandexTransactionRecord
+        fields = (
+            "id",
+            "external_transaction_id",
+            "driver_external_id",
+            "event_at",
+            "amount",
+            "currency",
+            "category",
+            "direction",
             "updated_at",
         )
 

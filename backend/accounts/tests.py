@@ -1,9 +1,11 @@
 from django.contrib.auth.models import User
 from django.urls import reverse
 from rest_framework import status
+from rest_framework.test import APIRequestFactory
 from rest_framework.test import APITestCase
 
 from accounts.models import Fleet, FleetPhoneBinding
+from accounts.roles import get_request_fleet_binding
 
 
 class FleetRoleManagementTests(APITestCase):
@@ -102,4 +104,20 @@ class FleetRoleManagementTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         binding = FleetPhoneBinding.objects.get(fleet=self.fleet, phone_number="598444444")
+        self.assertEqual(binding.role, FleetPhoneBinding.Role.ADMIN)
+
+    def test_request_binding_prefers_highest_role_for_same_fleet(self):
+        FleetPhoneBinding.objects.create(
+            fleet=self.fleet,
+            user=self.admin,
+            phone_number="598999999",
+            role=FleetPhoneBinding.Role.DRIVER,
+        )
+        request = APIRequestFactory().post("/api/integrations/bog/test-token/", {}, format="json")
+        request.user = self.admin
+        request.query_params = {}
+        request.headers = {"X-Fleet-Name": self.fleet.name}
+
+        binding = get_request_fleet_binding(user=self.admin, request=request)
+        self.assertIsNotNone(binding)
         self.assertEqual(binding.role, FleetPhoneBinding.Role.ADMIN)

@@ -27,7 +27,19 @@ def get_request_fleet_binding(*, user, request):
     if not bindings.exists():
         return None
 
-    return bindings.order_by("created_at", "id").first()
+    candidates = list(bindings)
+    if not candidates:
+        return None
+
+    candidates.sort(
+        key=lambda binding: (
+            ROLE_RANK.get(binding.role, 0),
+            binding.created_at or 0,
+            binding.id,
+        ),
+        reverse=True,
+    )
+    return candidates[0]
 
 
 def meets_min_role(*, binding, minimum_role):

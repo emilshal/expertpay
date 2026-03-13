@@ -1,9 +1,33 @@
 import { useEffect, useState } from "react";
-import { syncYandexCategories, yandexCategories, yandexSyncRuns, type YandexCategory, type YandexSyncRun } from "../lib/api";
+import {
+  syncYandexCategories,
+  yandexCategories,
+  yandexDriverDetail,
+  yandexDriverSummaries,
+  yandexEvents,
+  yandexSyncRuns,
+  yandexTransactions,
+  type YandexCategory,
+  type YandexDriverDetail,
+  type YandexDriverSummary,
+  type YandexEvent,
+  type YandexSyncRun,
+  type YandexTransactionRecord
+} from "../lib/api";
+
+function displayDriverName(driver: YandexDriverSummary["driver"]) {
+  const name = `${driver.first_name} ${driver.last_name}`.trim();
+  return name || driver.external_driver_id;
+}
 
 export default function YandexOpsPage() {
   const [categories, setCategories] = useState<YandexCategory[]>([]);
+  const [driverSummaries, setDriverSummaries] = useState<YandexDriverSummary[]>([]);
+  const [transactions, setTransactions] = useState<YandexTransactionRecord[]>([]);
+  const [events, setEvents] = useState<YandexEvent[]>([]);
   const [runs, setRuns] = useState<YandexSyncRun[]>([]);
+  const [selectedDriver, setSelectedDriver] = useState<YandexDriverDetail | null>(null);
+  const [selectedDriverId, setSelectedDriverId] = useState("");
   const [loading, setLoading] = useState(false);
   const [syncingCategories, setSyncingCategories] = useState(false);
   const [error, setError] = useState("");
@@ -12,15 +36,35 @@ export default function YandexOpsPage() {
   async function loadAll() {
     setLoading(true);
     setError("");
-    setMessage("");
     try {
-      const [cats, syncRuns] = await Promise.all([yandexCategories(), yandexSyncRuns()]);
+      const [cats, driverRows, txRows, eventRows, syncRuns] = await Promise.all([
+        yandexCategories(),
+        yandexDriverSummaries(),
+        yandexTransactions(),
+        yandexEvents(),
+        yandexSyncRuns()
+      ]);
       setCategories(cats);
+      setDriverSummaries(driverRows);
+      setTransactions(txRows);
+      setEvents(eventRows);
       setRuns(syncRuns);
     } catch {
-      setError("Unable to load Yandex Ops data.");
+      setError("Unable to load Yandex data.");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function openDriver(externalDriverId: string) {
+    try {
+      setSelectedDriverId(externalDriverId);
+      const detail = await yandexDriverDetail(externalDriverId);
+      setSelectedDriver(detail);
+    } catch {
+      setError("Unable to load driver detail.");
+    } finally {
+      setSelectedDriverId("");
     }
   }
 
@@ -31,7 +75,6 @@ export default function YandexOpsPage() {
     try {
       const result = await syncYandexCategories();
       const payload = result.categories_sync as {
-        ok?: boolean;
         fetched?: number;
         upserted?: number;
         detail?: string;
@@ -56,8 +99,13 @@ export default function YandexOpsPage() {
   return (
     <section className="card">
       <div className="cardTitleRow">
-        <h1>Yandex Ops</h1>
-        <div style={{ display: "flex", gap: "8px" }}>
+        <div>
+          <h1>Yandex Data</h1>
+          <p className="statusHint" style={{ marginTop: "6px" }}>
+            Browse synced drivers, normalized transactions, raw events, categories, and recent sync runs.
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "flex-end" }}>
           <button className="btn btnGhost" type="button" onClick={() => void loadAll()}>
             {loading ? "Loading..." : "Refresh"}
           </button>
@@ -70,7 +118,180 @@ export default function YandexOpsPage() {
       {error ? <p className="statusError">{error}</p> : null}
       {message ? <p className="statusHint">{message}</p> : null}
 
-      <h2 className="h2" style={{ marginTop: "8px" }}>
+      <div className="txList" role="list" style={{ marginTop: "14px" }}>
+        <div className="txRow" role="listitem">
+          <div className="txMain">
+            <div className="txTitle">Drivers</div>
+            <div className="txSub">Profiles with per-driver earnings totals</div>
+          </div>
+          <div className="txAmount pos">{driverSummaries.length}</div>
+        </div>
+        <div className="txRow" role="listitem">
+          <div className="txMain">
+            <div className="txTitle">Transactions</div>
+            <div className="txSub">Normalized transaction rows stored locally</div>
+          </div>
+          <div className="txAmount pos">{transactions.length}</div>
+        </div>
+        <div className="txRow" role="listitem">
+          <div className="txMain">
+            <div className="txTitle">Raw Events</div>
+            <div className="txSub">Latest raw imported Yandex events</div>
+          </div>
+          <div className="txAmount">{events.length}</div>
+        </div>
+        <div className="txRow" role="listitem">
+          <div className="txMain">
+            <div className="txTitle">Categories</div>
+            <div className="txSub">Category mapping available for this fleet</div>
+          </div>
+          <div className="txAmount">{categories.length}</div>
+        </div>
+        <div className="txRow" role="listitem">
+          <div className="txMain">
+            <div className="txTitle">Sync Runs</div>
+            <div className="txSub">Recent live and scheduler sync history</div>
+          </div>
+          <div className="txAmount">{runs.length}</div>
+        </div>
+      </div>
+
+      <h2 className="h2" style={{ marginTop: "20px" }}>
+        Drivers
+      </h2>
+      <div className="txList" role="list">
+        {driverSummaries.length === 0 ? (
+          <div className="txRow" role="listitem">
+            <div className="txMain">
+              <div className="txTitle">No driver profiles synced yet</div>
+            </div>
+          </div>
+        ) : (
+          driverSummaries.slice(0, 50).map((item) => (
+            <button
+              className="txRow txRowButton"
+              type="button"
+              role="listitem"
+              key={item.driver.id}
+              onClick={() => void openDriver(item.driver.external_driver_id)}
+            >
+              <div className="txMain">
+                <div className="txTitle">{displayDriverName(item.driver)}</div>
+                <div className="txSub">
+                  Earned {item.summary.total_earned} {item.summary.currency} | Deductions {item.summary.total_deductions}{" "}
+                  {item.summary.currency}
+                </div>
+                <div className="txSub">
+                  {item.driver.phone_number || "No phone"} | {item.driver.external_driver_id}
+                </div>
+              </div>
+              <div className="txAmount pos">
+                {item.summary.net_total} {item.summary.currency}
+              </div>
+            </button>
+          ))
+        )}
+      </div>
+
+      {selectedDriver ? (
+        <>
+          <h2 className="h2" style={{ marginTop: "20px" }}>
+            Driver Detail
+          </h2>
+          <div className="txList" role="list">
+            <div className="txRow" role="listitem">
+              <div className="txMain">
+                <div className="txTitle">{displayDriverName(selectedDriver.driver)}</div>
+                <div className="txSub">
+                  {selectedDriver.driver.phone_number || "No phone"} | {selectedDriver.driver.external_driver_id}
+                </div>
+                <div className="txSub">Status {selectedDriver.driver.status || "unknown"}</div>
+              </div>
+              <div className="txAmount pos">{selectedDriver.summary.net_total} {selectedDriver.summary.currency}</div>
+            </div>
+            <div className="txRow" role="listitem">
+              <div className="txMain">
+                <div className="txTitle">Summary</div>
+                <div className="txSub">Transactions {selectedDriver.summary.transaction_count}</div>
+                <div className="txSub">Earned {selectedDriver.summary.total_earned} {selectedDriver.summary.currency}</div>
+                <div className="txSub">
+                  Deductions {selectedDriver.summary.total_deductions} {selectedDriver.summary.currency}
+                </div>
+              </div>
+              <div className="txAmount">{selectedDriver.summary.last_transaction_at || "No activity"}</div>
+            </div>
+            {selectedDriver.recent_transactions.slice(0, 20).map((tx) => (
+              <div className="txRow" role="listitem" key={tx.id}>
+                <div className="txMain">
+                  <div className="txTitle">{tx.category || "transaction"}</div>
+                  <div className="txSub">{tx.event_at || "No timestamp"}</div>
+                </div>
+                <div className={`txAmount ${tx.direction === "credit" ? "pos" : tx.direction === "debit" ? "neg" : ""}`}>
+                  {tx.amount} {tx.currency}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : selectedDriverId ? (
+        <p className="statusHint" style={{ marginTop: "18px" }}>Loading driver detail...</p>
+      ) : null}
+
+      <h2 className="h2" style={{ marginTop: "20px" }}>
+        Transactions
+      </h2>
+      <div className="txList" role="list">
+        {transactions.length === 0 ? (
+          <div className="txRow" role="listitem">
+            <div className="txMain">
+              <div className="txTitle">No transactions synced yet</div>
+            </div>
+          </div>
+        ) : (
+          transactions.slice(0, 50).map((tx) => (
+            <div className="txRow" role="listitem" key={tx.id}>
+              <div className="txMain">
+                <div className="txTitle">
+                  {tx.category || "transaction"} | {tx.external_transaction_id}
+                </div>
+                <div className="txSub">
+                  Driver {tx.driver_external_id || "n/a"} | {tx.event_at || "No timestamp"}
+                </div>
+              </div>
+              <div className={`txAmount ${tx.direction === "credit" ? "pos" : tx.direction === "debit" ? "neg" : ""}`}>
+                {tx.amount} {tx.currency}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+
+      <h2 className="h2" style={{ marginTop: "20px" }}>
+        Raw Events
+      </h2>
+      <div className="txList" role="list">
+        {events.length === 0 ? (
+          <div className="txRow" role="listitem">
+            <div className="txMain">
+              <div className="txTitle">No raw events loaded yet</div>
+            </div>
+          </div>
+        ) : (
+          events.slice(0, 30).map((event) => (
+            <div className="txRow" role="listitem" key={event.id}>
+              <div className="txMain">
+                <div className="txTitle">
+                  {event.event_type} | {event.external_id}
+                </div>
+                <div className="txSub">{event.created_at}</div>
+              </div>
+              <div className={`txAmount ${event.processed ? "pos" : "neg"}`}>{event.processed ? "processed" : "pending"}</div>
+            </div>
+          ))
+        )}
+      </div>
+
+      <h2 className="h2" style={{ marginTop: "20px" }}>
         Categories
       </h2>
       <div className="txList" role="list">
@@ -81,7 +302,7 @@ export default function YandexOpsPage() {
             </div>
           </div>
         ) : (
-          categories.map((category) => (
+          categories.slice(0, 50).map((category) => (
             <div className="txRow" role="listitem" key={category.id}>
               <div className="txMain">
                 <div className="txTitle">{category.name}</div>
@@ -90,14 +311,14 @@ export default function YandexOpsPage() {
                 </div>
               </div>
               <div className={`txAmount ${category.is_creatable ? "pos" : "neg"}`}>
-                {category.is_creatable ? "CREATABLE" : "READ-ONLY"}
+                {category.is_creatable ? "creatable" : "read-only"}
               </div>
             </div>
           ))
         )}
       </div>
 
-      <h2 className="h2" style={{ marginTop: "18px" }}>
+      <h2 className="h2" style={{ marginTop: "20px" }}>
         Recent Sync Runs
       </h2>
       <div className="txList" role="list">
@@ -108,14 +329,14 @@ export default function YandexOpsPage() {
             </div>
           </div>
         ) : (
-          runs.slice(0, 20).map((run) => (
+          runs.slice(0, 30).map((run) => (
             <div className="txRow" role="listitem" key={run.id}>
               <div className="txMain">
                 <div className="txTitle">
                   {run.trigger.toUpperCase()} | {run.status.toUpperCase()}
                 </div>
                 <div className="txSub">
-                  {run.created_at} | tx fetched {run.transactions_fetched} | imported {run.imported_count}
+                  {run.created_at} | drivers {run.drivers_fetched} | tx {run.transactions_fetched}
                 </div>
                 <div className="txSub">{run.detail}</div>
               </div>

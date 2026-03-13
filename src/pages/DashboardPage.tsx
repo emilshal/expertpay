@@ -391,6 +391,7 @@ function WithdrawModal({
   const [bankName, setBankName] = useState("");
   const [accountNumber, setAccountNumber] = useState("");
   const [beneficiaryName, setBeneficiaryName] = useState("");
+  const [beneficiaryInn, setBeneficiaryInn] = useState("");
   const [amount, setAmount] = useState("0.00");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -408,7 +409,8 @@ function WithdrawModal({
         const newAccount = await createBankAccount({
           bank_name: bankName,
           account_number: accountNumber,
-          beneficiary_name: beneficiaryName
+          beneficiary_name: beneficiaryName,
+          beneficiary_inn: beneficiaryInn
         });
         bankId = newAccount.id;
         setBankAccounts([newAccount, ...bankAccounts]);
@@ -425,6 +427,7 @@ function WithdrawModal({
           bank_name: "Bank name",
           account_number: "Account number",
           beneficiary_name: "Beneficiary name",
+          beneficiary_inn: "Beneficiary ID number",
           bank_account_id: "Bank account",
           amount: "Amount",
           note: "Note"
@@ -495,6 +498,18 @@ function WithdrawModal({
                   placeholder="Full name"
                   value={beneficiaryName}
                   onChange={(event) => setBeneficiaryName(event.target.value)}
+                />
+              </label>
+
+              <label className="transferField">
+                <span className="transferLabel">Beneficiary ID number</span>
+                <input
+                  className="transferInput"
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="Personal or company ID"
+                  value={beneficiaryInn}
+                  onChange={(event) => setBeneficiaryInn(event.target.value)}
                 />
               </label>
             </>
