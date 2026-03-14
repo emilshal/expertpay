@@ -92,6 +92,25 @@ class YandexSimulatorApiTests(APITestCase):
         self.assertEqual(len(events_response.data), 3)
         self.assertIn("external_id", events_response.data[0])
 
+    def test_purge_simulated_data_removes_sim_events_and_ledger_impact(self):
+        self.client.post(reverse("yandex-connect"), data={}, format="json")
+        self.client.post(
+            reverse("yandex-simulate"),
+            data={"mode": "steady", "count": 4},
+            format="json",
+        )
+        import_response = self.client.post(reverse("yandex-import"), data={}, format="json")
+        imported_total = Decimal(import_response.data["imported_total"])
+
+        purge_response = self.client.post(reverse("yandex-purge-simulated"), data={}, format="json")
+        self.assertEqual(purge_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(purge_response.data["deleted_events"], 4)
+        self.assertEqual(Decimal(purge_response.data["removed_total"]), imported_total)
+
+        wallet = Wallet.objects.get(user=self.user)
+        self.assertEqual(wallet.balance, Decimal("0.00"))
+        self.assertEqual(ExternalEvent.objects.filter(connection__user=self.user, external_id__startswith="yandex-").count(), 0)
+
     def test_connection_is_reused_for_same_user(self):
         first = self.client.post(reverse("yandex-connect"), data={}, format="json")
         second = self.client.post(reverse("yandex-connect"), data={}, format="json")

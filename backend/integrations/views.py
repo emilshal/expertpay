@@ -40,6 +40,7 @@ from .services import (
     generate_simulated_events,
     import_unprocessed_events,
     live_sync_yandex_data,
+    purge_simulated_yandex_data,
     reconciliation_summary,
     sync_yandex_transaction_categories,
     sync_bog_payout_status,
@@ -381,6 +382,20 @@ class ReconcileYandexView(APIView):
     def get(self, request):
         connection = _get_or_create_yandex_connection(request.user)
         return Response(reconciliation_summary(connection=connection))
+
+
+class PurgeSimulatedYandexDataView(APIView):
+    permission_classes = [IsAuthenticated]
+    throttle_scope = "yandex_write"
+
+    def post(self, request):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.ADMIN):
+            return Response({"detail": "Only admin/owner can purge simulated Yandex data."}, status=403)
+
+        connection = _get_or_create_yandex_connection(request.user)
+        result = purge_simulated_yandex_data(connection=connection)
+        return Response(result, status=status.HTTP_200_OK)
 
 
 class ConnectBankSimulatorView(APIView):

@@ -81,6 +81,7 @@ This uses PostgreSQL on `localhost:5433` with:
 - `POST /api/integrations/yandex/simulate-events/`
 - `POST /api/integrations/yandex/import/`
 - `GET /api/integrations/yandex/reconcile/`
+- `POST /api/integrations/yandex/purge-simulated/`
 - `POST /api/integrations/bog/test-token/` (Bank of Georgia client-credentials token health check)
 - `GET /api/integrations/bog/payouts/`
 - `POST /api/integrations/bog/payouts/submit/`
@@ -236,4 +237,12 @@ Run integration tests (requires DB connection). If Postgres is not running local
 ```bash
 cd backend
 DB_ENGINE=django.db.backends.sqlite3 DB_NAME=db.sqlite3 DB_USER='' DB_PASSWORD='' DB_HOST='' DB_PORT='' ../backend/.venv/bin/python manage.py test integrations -v 2
+```
+
+### Remove old simulated Yandex data
+If you want the app to reflect only live Yandex imports for a user:
+
+```bash
+cd backend
+../backend/.venv/bin/python manage.py purge_yandex_simulated --user-id 1
 ```

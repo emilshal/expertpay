@@ -976,6 +976,68 @@ def _record_yandex_sync_run(*, connection, result, trigger, dry_run, full_sync, 
     )
 
 
+def purge_simulated_yandex_data(*, connection: ProviderConnection):
+    simulated_events = list(
+        ExternalEvent.objects.filter(connection=connection, external_id__startswith="yandex-").order_by("id")
+    )
+    simulated_event_ids = [event.id for event in simulated_events]
+    simulated_external_ids = [event.external_id for event in simulated_events]
+    if not simulated_event_ids:
+        return {
+            "deleted_events": 0,
+            "deleted_transactions": 0,
+            "deleted_ledger_entries": 0,
+            "removed_total": "0.00",
+            "wallet_balance": str(Wallet.objects.get_or_create(user=connection.user)[0].balance),
+        }
+
+    wallet, _ = Wallet.objects.get_or_create(user=connection.user)
+    ledger_account = get_or_create_user_ledger_account(connection.user, wallet.currency)
+    ensure_opening_entry(ledger_account, wallet.balance, created_by=connection.user)
+
+    with transaction.atomic():
+        locked_account = LedgerAccount.objects.select_for_update().get(id=ledger_account.id)
+        locked_wallet = Wallet.objects.select_for_update().get(id=wallet.id)
+
+        ledger_entries = list(
+            locked_account.entries.filter(
+                entry_type="yandex_earning",
+                reference_type="external_event",
+                reference_id__in=[str(event_id) for event_id in simulated_event_ids],
+            )
+        )
+        removed_total = sum((entry.amount for entry in ledger_entries), Decimal("0.00"))
+        ledger_entry_ids = [entry.id for entry in ledger_entries]
+
+        deleted_transactions = YandexTransactionRecord.objects.filter(
+            connection=connection,
+            external_event_id__in=simulated_event_ids,
+        ).count()
+        YandexTransactionRecord.objects.filter(
+            connection=connection,
+            external_event_id__in=simulated_event_ids,
+        ).delete()
+
+        deleted_ledger_entries = len(ledger_entry_ids)
+        if ledger_entry_ids:
+            locked_account.entries.filter(id__in=ledger_entry_ids).delete()
+
+        deleted_events = len(simulated_event_ids)
+        ExternalEvent.objects.filter(id__in=simulated_event_ids).delete()
+
+        locked_wallet.balance = get_account_balance(locked_account, locked_wallet.currency)
+        locked_wallet.save(update_fields=["balance", "updated_at"])
+
+    return {
+        "deleted_events": deleted_events,
+        "deleted_transactions": deleted_transactions,
+        "deleted_ledger_entries": deleted_ledger_entries,
+        "removed_total": str(removed_total),
+        "wallet_balance": str(locked_wallet.balance),
+        "external_ids": simulated_external_ids[:25],
+    }
+
+
 def _reverse_withdrawal_to_wallet(*, withdrawal: WithdrawalRequest, reason: str, idempotency_key: str, created_by):
     with transaction.atomic():
         locked_withdrawal = WithdrawalRequest.objects.select_for_update().select_related(
