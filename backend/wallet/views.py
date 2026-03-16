@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.conf import settings
 from django.db import transaction as db_transaction
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
@@ -17,9 +18,13 @@ from ledger.services import (
     get_or_create_user_ledger_account,
 )
 from payments.models import InternalTransfer
-from .models import BankAccount, Wallet, WithdrawalRequest
+from integrations.models import ProviderConnection
+from integrations.services import sync_bog_deposits
+from .models import BankAccount, Deposit, Wallet, WithdrawalRequest
 from .serializers import (
     BankAccountSerializer,
+    DepositInstructionSerializer,
+    DepositSerializer,
     WalletTopUpSerializer,
     TransactionFeedSerializer,
     WalletSerializer,
@@ -27,9 +32,12 @@ from .serializers import (
     WithdrawalSerializer,
     WithdrawalStatusUpdateSerializer,
 )
+from .services import build_wallet_deposit_reference
 
 
 def _transaction_kind(entry_type):
+    if entry_type.startswith("bank_deposit"):
+        return "deposit"
     if entry_type.startswith("withdrawal"):
         return "withdrawal"
     if entry_type.startswith("internal_transfer"):
@@ -362,3 +370,47 @@ class WalletTopUpView(APIView):
             metadata={"amount": str(amount), "currency": wallet.currency, "note": note},
         )
         return Response(response_payload, status=status.HTTP_201_CREATED)
+
+
+class DepositInstructionsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        payload = {
+            "bank_name": "Bank of Georgia",
+            "account_holder_name": settings.BOG_PAYER_NAME or "",
+            "account_number": settings.BOG_SOURCE_ACCOUNT_NUMBER or "",
+            "currency": "GEL",
+            "reference_code": build_wallet_deposit_reference(request.user),
+            "note": "Send a bank transfer to this account and include the exact reference code.",
+        }
+        serializer = DepositInstructionSerializer(payload)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class DepositListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = DepositSerializer
+
+    def get_queryset(self):
+        return Deposit.objects.filter(user=self.request.user)
+
+
+class DepositSyncView(APIView):
+    permission_classes = [IsAuthenticated]
+    throttle_scope = "money_status_write"
+
+    def post(self, request):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.OPERATOR):
+            return Response({"detail": "Only operator/admin/owner can sync deposits from bank."}, status=403)
+
+        connection = ProviderConnection.objects.filter(
+            user=request.user,
+            provider=ProviderConnection.Provider.BANK_OF_GEORGIA,
+        ).first()
+        if connection is None:
+            return Response({"detail": "Bank of Georgia connection is not configured."}, status=status.HTTP_400_BAD_REQUEST)
+
+        result = sync_bog_deposits(connection=connection)
+        return Response(result, status=status.HTTP_200_OK)

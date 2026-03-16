@@ -193,6 +193,7 @@ BOG_SOURCE_ACCOUNT_NUMBER = os.getenv("BOG_SOURCE_ACCOUNT_NUMBER", "").strip()
 BOG_PAYER_INN = os.getenv("BOG_PAYER_INN", "").strip()
 BOG_PAYER_NAME = os.getenv("BOG_PAYER_NAME", "").strip()
 BOG_DOCUMENT_PREFIX = os.getenv("BOG_DOCUMENT_PREFIX", "EPW").strip() or "EPW"
+BOG_DEPOSIT_REFERENCE_PREFIX = os.getenv("BOG_DEPOSIT_REFERENCE_PREFIX", "EXP").strip() or "EXP"
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 SENTRY_DSN = os.getenv("SENTRY_DSN", "").strip()

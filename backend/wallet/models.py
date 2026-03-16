@@ -76,3 +76,74 @@ class WithdrawalRequest(models.Model):
 
     def __str__(self):
         return f"Withdrawal<{self.user_id}> {self.amount} {self.currency} ({self.status})"
+
+
+class IncomingBankTransfer(models.Model):
+    class MatchStatus(models.TextChoices):
+        MATCHED = "matched", "Matched"
+        UNMATCHED = "unmatched", "Unmatched"
+        IGNORED = "ignored", "Ignored"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="incoming_bank_transfers",
+        null=True,
+        blank=True,
+    )
+    provider = models.CharField(max_length=32, default="bog")
+    provider_transaction_id = models.CharField(max_length=120, unique=True)
+    account_number = models.CharField(max_length=64, blank=True)
+    currency = models.CharField(max_length=8, default="GEL")
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    reference_text = models.TextField(blank=True)
+    payer_name = models.CharField(max_length=140, blank=True)
+    payer_inn = models.CharField(max_length=32, blank=True)
+    payer_account_number = models.CharField(max_length=64, blank=True)
+    booking_date = models.DateField(null=True, blank=True)
+    value_date = models.DateField(null=True, blank=True)
+    match_status = models.CharField(max_length=16, choices=MatchStatus.choices, default=MatchStatus.UNMATCHED)
+    raw_payload = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.provider}:{self.provider_transaction_id}:{self.amount} {self.currency}"
+
+
+class Deposit(models.Model):
+    class Status(models.TextChoices):
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="deposits")
+    wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="deposits")
+    incoming_transfer = models.OneToOneField(
+        IncomingBankTransfer,
+        on_delete=models.SET_NULL,
+        related_name="deposit",
+        null=True,
+        blank=True,
+    )
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    currency = models.CharField(max_length=8, default="GEL")
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.COMPLETED)
+    reference_code = models.CharField(max_length=32)
+    provider = models.CharField(max_length=32, default="bog")
+    provider_transaction_id = models.CharField(max_length=120, unique=True)
+    payer_name = models.CharField(max_length=140, blank=True)
+    payer_inn = models.CharField(max_length=32, blank=True)
+    payer_account_number = models.CharField(max_length=64, blank=True)
+    note = models.TextField(blank=True)
+    raw_payload = models.JSONField(default=dict, blank=True)
+    completed_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Deposit<{self.user_id}> {self.amount} {self.currency} ({self.status})"

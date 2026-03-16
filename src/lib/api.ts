@@ -130,6 +130,31 @@ export type WalletBalance = {
   updated_at: string;
 };
 
+export type DepositInstruction = {
+  bank_name: string;
+  account_holder_name: string;
+  account_number: string;
+  currency: string;
+  reference_code: string;
+  note: string;
+};
+
+export type DepositItem = {
+  id: number;
+  amount: string;
+  currency: string;
+  status: "completed" | "failed";
+  reference_code: string;
+  provider: string;
+  provider_transaction_id: string;
+  payer_name: string;
+  payer_inn: string;
+  payer_account_number: string;
+  note: string;
+  completed_at: string;
+  created_at: string;
+};
+
 export type TransactionFeedItem = {
   id: string;
   kind: string;
@@ -382,6 +407,11 @@ export type ReconciliationSummary = {
     pending_total: string;
     failed_total: string;
   };
+  deposits: {
+    count: number;
+    total: string;
+    completed_total: string;
+  };
   bank_simulator: {
     count: number;
     totals_by_status: Record<string, string>;
@@ -475,6 +505,35 @@ export async function updateFleetMemberRole(input: {
 
 export async function walletBalance() {
   return request<WalletBalance>("/api/wallet/balance/");
+}
+
+export async function depositInstructions() {
+  return request<DepositInstruction>("/api/wallet/deposit-instructions/");
+}
+
+export async function depositsList() {
+  return request<DepositItem[]>("/api/wallet/deposits/");
+}
+
+export async function syncDeposits() {
+  return request<{
+    ok: boolean;
+    configured: boolean;
+    detail: string;
+    checked_count: number;
+    matched_count: number;
+    credited_count: number;
+    unmatched_count: number;
+    ignored_count: number;
+    credited_total: string;
+    http_status: number | null;
+    endpoint: string;
+    errors: unknown;
+  }>("/api/wallet/deposits/sync/", {
+    method: "POST",
+    body: JSON.stringify({}),
+    idempotent: true
+  });
 }
 
 export async function walletTransactions() {

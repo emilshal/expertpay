@@ -118,6 +118,15 @@ export default function SettingsPage() {
 
           <div className="txRow" role="listitem">
             <div className="txMain">
+              <div className="txTitle">Deposits</div>
+              <div className="txSub">Total {report.deposits.total}</div>
+              <div className="txSub">Completed {report.deposits.completed_total}</div>
+            </div>
+            <div className="txAmount pos">{report.deposits.count}</div>
+          </div>
+
+          <div className="txRow" role="listitem">
+            <div className="txMain">
               <div className="txTitle">Withdrawals</div>
               <div className="txSub">Total {report.withdrawals.total}</div>
               <div className="txSub">Completed {report.withdrawals.completed_total}</div>

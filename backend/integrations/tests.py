@@ -10,7 +10,7 @@ from rest_framework.test import APITestCase
 
 from accounts.models import Fleet, FleetPhoneBinding
 from ledger.models import LedgerAccount, LedgerEntry
-from wallet.models import BankAccount, Wallet, WithdrawalRequest
+from wallet.models import BankAccount, Deposit, IncomingBankTransfer, Wallet, WithdrawalRequest
 
 from .models import (
     BankSimulatorPayout,
@@ -22,7 +22,7 @@ from .models import (
     YandexTransactionCategory,
     YandexTransactionRecord,
 )
-from .services import get_valid_bog_access_token, live_sync_yandex_data
+from .services import get_valid_bog_access_token, live_sync_yandex_data, sync_bog_deposits
 
 
 User = get_user_model()
@@ -814,3 +814,50 @@ class YandexLiveSyncServiceTests(APITestCase):
         event = ExternalEvent.objects.get(connection=self.connection, external_id="tx-100")
         self.assertEqual(event.payload["driver_id"], "drv-1")
         self.assertEqual(event.payload["currency"], "GEL")
+
+
+class BogDepositSyncServiceTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="deposit_sync_user", password="pass1234")
+        self.connection = ProviderConnection.objects.create(
+            user=self.user,
+            provider=ProviderConnection.Provider.BANK_OF_GEORGIA,
+            external_account_id="bog-deposit-sync",
+            status="active",
+            config={"mode": "live"},
+        )
+
+    @patch("integrations.services._bog_request")
+    def test_sync_bog_deposits_matches_reference_and_credits_wallet(self, mocked_request):
+        mocked_request.return_value = {
+            "ok": True,
+            "http_status": 200,
+            "body": {
+                "Records": [
+                    {
+                        "DocKey": 1001,
+                        "Credit": "45.50",
+                        "Nomination": f"Deposit EXP-{self.user.id:06d}",
+                        "PayerName": "Levan Bagashvili",
+                        "PayerInn": "01001010101",
+                        "PostDate": "2026-03-16",
+                        "ValueDate": "2026-03-16",
+                    }
+                ]
+            },
+        }
+
+        with patch("integrations.services.settings.BOG_SOURCE_ACCOUNT_NUMBER", "GE00BG00000000000001"):
+            result = sync_bog_deposits(connection=self.connection)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["credited_count"], 1)
+        self.assertEqual(Decimal(result["credited_total"]), Decimal("45.50"))
+
+        wallet = Wallet.objects.get(user=self.user)
+        self.assertEqual(wallet.balance, Decimal("45.50"))
+        self.assertEqual(Deposit.objects.filter(user=self.user).count(), 1)
+        self.assertEqual(IncomingBankTransfer.objects.filter(user=self.user).count(), 1)
+
+        account = LedgerAccount.objects.get(user=self.user)
+        self.assertEqual(LedgerEntry.objects.filter(account=account, entry_type="bank_deposit").count(), 1)

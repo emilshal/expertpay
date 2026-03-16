@@ -62,6 +62,9 @@ This uses PostgreSQL on `localhost:5433` with:
 - `GET /api/wallet/balance/`
 - `GET /api/wallet/bank-accounts/`
 - `POST /api/wallet/bank-accounts/`
+- `GET /api/wallet/deposit-instructions/`
+- `GET /api/wallet/deposits/`
+- `POST /api/wallet/deposits/sync/`
 - `GET /api/wallet/transactions/`
 - `POST /api/wallet/top-up/` (sandbox testing credit)
 - `POST /api/wallet/withdrawals/`
@@ -192,9 +195,11 @@ BOG_SOURCE_ACCOUNT_NUMBER=...
 BOG_PAYER_INN=...
 BOG_PAYER_NAME=
 BOG_DOCUMENT_PREFIX=EXP
+BOG_DEPOSIT_REFERENCE_PREFIX=EXP
 ```
 
 Saved beneficiary bank accounts also need a `beneficiary_inn` value for domestic transfer submission.
+Users making deposits should include the exact generated reference code from the app in their bank transfer comment/nomination.
 
 ### Incremental live sync scheduler
 Manual run:
@@ -223,6 +228,14 @@ Manual run:
 ```bash
 cd backend
 ../backend/.venv/bin/python manage.py sync_bog_payouts
+```
+
+### BoG incoming-transfer deposits
+Manual deposit sync:
+
+```bash
+cd backend
+../backend/.venv/bin/python manage.py sync_bog_deposits --user-id 1
 ```
 
 ### CI

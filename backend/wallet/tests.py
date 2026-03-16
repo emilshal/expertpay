@@ -1,4 +1,5 @@
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.urls import reverse
@@ -6,9 +7,10 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from accounts.models import Fleet, FleetPhoneBinding
+from integrations.models import ProviderConnection
 from ledger.models import LedgerAccount, LedgerEntry
 
-from .models import Wallet
+from .models import Deposit, Wallet
 
 
 User = get_user_model()
@@ -69,3 +71,66 @@ class WalletTopUpApiTests(APITestCase):
             HTTP_X_REQUEST_ID="req-topup-3",
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class WalletDepositApiTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="deposit_user", password="pass1234")
+        self.client.force_authenticate(self.user)
+        self.fleet = Fleet.objects.create(name="Deposit Fleet")
+        FleetPhoneBinding.objects.create(
+            fleet=self.fleet,
+            user=self.user,
+            phone_number="598955555",
+            role=FleetPhoneBinding.Role.ADMIN,
+            is_active=True,
+        )
+
+    def test_deposit_instructions_return_account_and_reference(self):
+        response = self.client.get(reverse("deposit-instructions"))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("reference_code", response.data)
+        self.assertTrue(response.data["reference_code"].startswith("EXP-"))
+
+    @patch("wallet.views.sync_bog_deposits")
+    def test_deposit_sync_endpoint_returns_sync_result(self, mocked_sync):
+        ProviderConnection.objects.create(
+            user=self.user,
+            provider=ProviderConnection.Provider.BANK_OF_GEORGIA,
+            external_account_id="bog-deposit-user",
+            status="active",
+            config={"mode": "live"},
+        )
+        mocked_sync.return_value = {
+            "ok": True,
+            "configured": True,
+            "detail": "BoG deposit sync completed.",
+            "checked_count": 1,
+            "matched_count": 1,
+            "credited_count": 1,
+            "unmatched_count": 0,
+            "ignored_count": 0,
+            "credited_total": "50.00",
+            "http_status": 200,
+            "endpoint": "/documents/v2/todayactivities/test/GEL",
+            "errors": None,
+        }
+
+        response = self.client.post(reverse("deposit-sync"), data={}, format="json", HTTP_X_FLEET_NAME=self.fleet.name)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["credited_count"], 1)
+
+    def test_deposit_list_returns_user_deposits(self):
+        wallet, _ = Wallet.objects.get_or_create(user=self.user)
+        Deposit.objects.create(
+            user=self.user,
+            wallet=wallet,
+            amount=Decimal("25.00"),
+            currency="GEL",
+            reference_code="EXP-000123",
+            provider_transaction_id="bog-doc-1",
+        )
+        response = self.client.get(reverse("deposit-list"))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["provider_transaction_id"], "bog-doc-1")

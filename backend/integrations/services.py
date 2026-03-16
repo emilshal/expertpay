@@ -3,6 +3,7 @@ import random
 from datetime import timedelta
 import base64
 import json
+import re
 import time
 import uuid
 from urllib.error import HTTPError, URLError
@@ -10,10 +11,11 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.db import transaction
 from django.db.models import Sum
-from django.utils.dateparse import parse_datetime
+from django.utils.dateparse import parse_date, parse_datetime
 from django.utils import timezone
 
 from ledger.models import LedgerAccount
@@ -24,6 +26,8 @@ from ledger.services import (
     get_or_create_user_ledger_account,
 )
 from wallet.models import Wallet, WithdrawalRequest
+from wallet.models import Deposit, IncomingBankTransfer
+from wallet.services import build_wallet_deposit_reference
 
 from .models import (
     BogPayout,
@@ -35,6 +39,9 @@ from .models import (
     YandexTransactionCategory,
     YandexTransactionRecord,
 )
+
+
+User = get_user_model()
 
 
 def _yandex_missing_env_vars():
@@ -252,6 +259,228 @@ def _bog_request(*, connection: ProviderConnection, method: str, endpoint: str, 
             "http_status": None,
             "body": {"error": str(exc.reason)},
         }
+
+
+def _bog_records(payload):
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("Records", "records", "Items", "items", "Data", "data"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return value
+    return []
+
+
+def _bog_decimal(value) -> Decimal:
+    if value in (None, ""):
+        return Decimal("0.00")
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return Decimal("0.00")
+
+
+def _extract_bog_credit_amount(record: dict) -> Decimal:
+    for key in ("Credit", "EntryAmountCredit", "EntryAmountCreditBase"):
+        amount = _bog_decimal(record.get(key))
+        if amount > Decimal("0.00"):
+            return amount
+    amount = _bog_decimal(record.get("Amount"))
+    debit = _bog_decimal(record.get("Debit") or record.get("EntryAmountDebit"))
+    if amount > Decimal("0.00") and debit == Decimal("0.00"):
+        return amount
+    return Decimal("0.00")
+
+
+def _extract_bog_reference_text(record: dict) -> str:
+    parts = [
+        str(record.get("Nomination") or "").strip(),
+        str(record.get("EntryComment") or "").strip(),
+        str(record.get("EntryCommentEn") or "").strip(),
+    ]
+    return " | ".join([part for part in parts if part])[:1000]
+
+
+def _extract_bog_transaction_id(record: dict) -> str:
+    for key in ("DocKey", "Id", "EntryDocumentNumber", "DocNo"):
+        value = record.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return str(abs(hash(json.dumps(record, sort_keys=True))))
+
+
+def _find_user_by_deposit_reference(reference_text: str):
+    if not reference_text:
+        return None, ""
+    prefix = re.escape((getattr(settings, "BOG_DEPOSIT_REFERENCE_PREFIX", "EXP") or "EXP").strip().upper())
+    match = re.search(rf"\b{prefix}-(\d{{6}})\b", reference_text.upper())
+    if not match:
+        return None, ""
+    user_id = int(match.group(1))
+    user = User.objects.filter(id=user_id, is_active=True).first()
+    return user, match.group(0)
+
+
+def _complete_bank_deposit(*, user, provider_transaction_id: str, amount: Decimal, currency: str, reference_code: str, incoming_transfer, raw_payload: dict, note: str, payer_name: str, payer_inn: str, payer_account_number: str):
+    wallet, _ = Wallet.objects.get_or_create(user=user)
+    ledger_account = get_or_create_user_ledger_account(user, currency)
+    ensure_opening_entry(ledger_account, wallet.balance, created_by=user)
+
+    with transaction.atomic():
+        locked_wallet = Wallet.objects.select_for_update().get(id=wallet.id)
+        locked_account = LedgerAccount.objects.select_for_update().get(id=ledger_account.id)
+        deposit, created = Deposit.objects.get_or_create(
+            provider_transaction_id=provider_transaction_id,
+            defaults={
+                "user": user,
+                "wallet": locked_wallet,
+                "incoming_transfer": incoming_transfer,
+                "amount": amount,
+                "currency": currency,
+                "status": Deposit.Status.COMPLETED,
+                "reference_code": reference_code,
+                "provider": "bog",
+                "payer_name": payer_name,
+                "payer_inn": payer_inn,
+                "payer_account_number": payer_account_number,
+                "note": note,
+                "raw_payload": raw_payload,
+            },
+        )
+        if created:
+            create_ledger_entry(
+                account=locked_account,
+                amount=amount,
+                entry_type="bank_deposit",
+                created_by=user,
+                reference_type="deposit",
+                reference_id=str(deposit.id),
+                metadata={
+                    "description": f"Bank deposit {provider_transaction_id}",
+                    "reference_code": reference_code,
+                },
+                idempotency_key=f"bog:deposit:{provider_transaction_id}",
+            )
+            locked_wallet.balance = get_account_balance(locked_account, locked_wallet.currency)
+            locked_wallet.save(update_fields=["balance", "updated_at"])
+
+        return deposit, created
+
+
+def sync_bog_deposits(*, connection: ProviderConnection, use_statement: bool = False, start_date=None, end_date=None, currency: str = "GEL"):
+    missing = _bog_missing_env_vars()
+    if not settings.BOG_SOURCE_ACCOUNT_NUMBER:
+        missing.append("BOG_SOURCE_ACCOUNT_NUMBER")
+    if missing:
+        return {
+            "ok": False,
+            "configured": False,
+            "detail": f"Missing BoG settings: {', '.join(sorted(set(missing)))}",
+            "checked_count": 0,
+            "matched_count": 0,
+            "credited_count": 0,
+            "unmatched_count": 0,
+            "ignored_count": 0,
+            "credited_total": "0.00",
+            "http_status": None,
+        }
+
+    if use_statement:
+        if not start_date or not end_date:
+            raise ValueError("Statement sync requires start_date and end_date.")
+        endpoint = f"/statement/{settings.BOG_SOURCE_ACCOUNT_NUMBER}/{currency}/{start_date}/{end_date}"
+    else:
+        endpoint = f"/documents/v2/todayactivities/{settings.BOG_SOURCE_ACCOUNT_NUMBER}/{currency}"
+
+    response = _bog_request(connection=connection, method="GET", endpoint=endpoint)
+    records = _bog_records(response.get("body"))
+
+    checked_count = 0
+    matched_count = 0
+    credited_count = 0
+    unmatched_count = 0
+    ignored_count = 0
+    credited_total = Decimal("0.00")
+
+    for record in records:
+        provider_transaction_id = _extract_bog_transaction_id(record)
+        amount = _extract_bog_credit_amount(record)
+        reference_text = _extract_bog_reference_text(record)
+        payer_name = str(record.get("PayerName") or ((record.get("Sender") or {}).get("Name") if isinstance(record.get("Sender"), dict) else "") or "").strip()
+        payer_inn = str(record.get("PayerInn") or ((record.get("Sender") or {}).get("Inn") if isinstance(record.get("Sender"), dict) else "") or "").strip()
+        payer_account_number = str(((record.get("Sender") or {}).get("AccountNumber") if isinstance(record.get("Sender"), dict) else "") or record.get("EntryAccountNumber") or "").strip()
+        booking_date_raw = record.get("PostDate") or record.get("EntryDate")
+        value_date_raw = record.get("ValueDate") or record.get("DocumentValueDate")
+        booking_date = parse_date(str(booking_date_raw)) if booking_date_raw else None
+        value_date = parse_date(str(value_date_raw)) if value_date_raw else None
+
+        checked_count += 1
+        matched_user, matched_reference = _find_user_by_deposit_reference(reference_text)
+
+        if amount <= Decimal("0.00"):
+            match_status = IncomingBankTransfer.MatchStatus.IGNORED
+            ignored_count += 1
+        elif matched_user is not None:
+            match_status = IncomingBankTransfer.MatchStatus.MATCHED
+            matched_count += 1
+        else:
+            match_status = IncomingBankTransfer.MatchStatus.UNMATCHED
+            unmatched_count += 1
+
+        transfer, _ = IncomingBankTransfer.objects.update_or_create(
+            provider_transaction_id=provider_transaction_id,
+            defaults={
+                "user": matched_user,
+                "provider": "bog",
+                "account_number": settings.BOG_SOURCE_ACCOUNT_NUMBER,
+                "currency": currency,
+                "amount": amount,
+                "reference_text": reference_text,
+                "payer_name": payer_name,
+                "payer_inn": payer_inn,
+                "payer_account_number": payer_account_number,
+                "booking_date": booking_date or None,
+                "value_date": value_date or None,
+                "match_status": match_status,
+                "raw_payload": record,
+            },
+        )
+
+        if match_status != IncomingBankTransfer.MatchStatus.MATCHED or matched_user is None:
+            continue
+
+        deposit, created = _complete_bank_deposit(
+            user=matched_user,
+            provider_transaction_id=provider_transaction_id,
+            amount=amount,
+            currency=currency,
+            reference_code=matched_reference or build_wallet_deposit_reference(matched_user),
+            incoming_transfer=transfer,
+            raw_payload=record,
+            note=reference_text,
+            payer_name=payer_name,
+            payer_inn=payer_inn,
+            payer_account_number=payer_account_number,
+        )
+        if created and deposit.status == Deposit.Status.COMPLETED:
+            credited_count += 1
+            credited_total += amount
+
+    return {
+        "ok": bool(response.get("ok")),
+        "configured": True,
+        "detail": "BoG deposit sync completed." if response.get("ok") else "BoG deposit sync failed.",
+        "checked_count": checked_count,
+        "matched_count": matched_count,
+        "credited_count": credited_count,
+        "unmatched_count": unmatched_count,
+        "ignored_count": ignored_count,
+        "credited_total": str(credited_total),
+        "http_status": response.get("http_status"),
+        "endpoint": endpoint,
+        "errors": None if response.get("ok") else response.get("body"),
+    }
 
 
 def _infer_bog_bank_code(bank_name: str):
@@ -1380,6 +1609,12 @@ def build_reconciliation_report(*, user):
             "sync_runs_count": 0,
         }
 
+    deposits = Deposit.objects.filter(user=user)
+    deposits_total = deposits.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+    deposits_completed = (
+        deposits.filter(status=Deposit.Status.COMPLETED).aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+    )
+
     withdrawals = WithdrawalRequest.objects.filter(user=user)
     withdrawals_total = withdrawals.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
     withdrawals_completed = (
@@ -1441,6 +1676,11 @@ def build_reconciliation_report(*, user):
             "completed_total": str(withdrawals_completed),
             "pending_total": str(withdrawals_pending),
             "failed_total": str(withdrawals_failed),
+        },
+        "deposits": {
+            "count": deposits.count(),
+            "total": str(deposits_total),
+            "completed_total": str(deposits_completed),
         },
         "bank_simulator": {
             "count": payouts.count(),

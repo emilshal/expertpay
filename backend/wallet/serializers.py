@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
-from .models import BankAccount, Wallet, WithdrawalRequest
+from .models import BankAccount, Deposit, IncomingBankTransfer, Wallet, WithdrawalRequest
 
 
 class WalletSerializer(serializers.ModelSerializer):
@@ -26,6 +26,57 @@ class TransactionFeedSerializer(serializers.Serializer):
     status = serializers.CharField()
     description = serializers.CharField(allow_blank=True)
     created_at = serializers.DateTimeField()
+
+
+class DepositInstructionSerializer(serializers.Serializer):
+    bank_name = serializers.CharField()
+    account_holder_name = serializers.CharField(allow_blank=True)
+    account_number = serializers.CharField()
+    currency = serializers.CharField()
+    reference_code = serializers.CharField()
+    note = serializers.CharField()
+
+
+class DepositSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Deposit
+        fields = (
+            "id",
+            "amount",
+            "currency",
+            "status",
+            "reference_code",
+            "provider",
+            "provider_transaction_id",
+            "payer_name",
+            "payer_inn",
+            "payer_account_number",
+            "note",
+            "completed_at",
+            "created_at",
+        )
+
+
+class IncomingBankTransferSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = IncomingBankTransfer
+        fields = (
+            "id",
+            "provider",
+            "provider_transaction_id",
+            "account_number",
+            "currency",
+            "amount",
+            "reference_text",
+            "payer_name",
+            "payer_inn",
+            "payer_account_number",
+            "booking_date",
+            "value_date",
+            "match_status",
+            "created_at",
+            "updated_at",
+        )
 
 
 class WithdrawalCreateSerializer(serializers.Serializer):

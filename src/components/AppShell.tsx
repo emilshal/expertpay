@@ -4,6 +4,7 @@ import { clearTokens, getActiveFleetName } from "../lib/api";
 
 const MENU_ITEMS = [
   { to: "/dashboard", label: "Dashboard" },
+  { to: "/deposits", label: "Deposits" },
   { to: "/connect-yandex", label: "Yandex Overview" },
   { to: "/yandex-data", label: "Yandex Data" },
   { to: "/settings", label: "Reconciliation" },

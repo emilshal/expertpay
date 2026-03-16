@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   bankAccounts,
   createBankAccount,
   createInternalTransferByBank,
   createWithdrawal,
-  topUpWallet,
   walletBalance,
   walletTransactions,
   type BankAccount,
@@ -42,10 +42,10 @@ function formatApiError(
 }
 
 export default function DashboardPage() {
+  const navigate = useNavigate();
   const [isBonusesOpen, setBonusesOpen] = useState(false);
   const [isTransferOpen, setTransferOpen] = useState(false);
   const [isWithdrawOpen, setWithdrawOpen] = useState(false);
-  const [isTopUpOpen, setTopUpOpen] = useState(false);
   const [isRentOpen, setRentOpen] = useState(false);
 
   const [balance, setBalance] = useState("0.00");
@@ -120,7 +120,7 @@ export default function DashboardPage() {
             label="Fill up balance"
             variant="soft"
             icon={<IconPlus />}
-            onClick={() => setTopUpOpen(true)}
+            onClick={() => navigate("/deposits")}
           />
           <IconButton label="Video tariffs" variant="soft" icon={<IconPlay />} />
         </div>
@@ -154,7 +154,6 @@ export default function DashboardPage() {
           setBankAccounts={setAccounts}
         />
       ) : null}
-      {isTopUpOpen ? <TopUpModal onClose={() => setTopUpOpen(false)} onSuccess={loadAppData} /> : null}
       {isRentOpen ? <RentModal onClose={() => setRentOpen(false)} /> : null}
     </div>
   );
@@ -164,6 +163,7 @@ function TransactionRow({ tx }: { tx: TransactionFeedItem }) {
   const amountNum = Number(tx.amount);
   const positive = amountNum > 0;
   const title = useMemo(() => {
+    if (tx.kind === "deposit") return "Deposit";
     if (tx.kind === "withdrawal") return "Withdrawal";
     if (tx.kind === "internal_transfer") return "Internal transfer";
     return "Adjustment";
@@ -558,72 +558,6 @@ function RentModal({ onClose }: { onClose: () => void }) {
         <a className="transferSubmit rentSubmit" href="https://taxio.ge/" target="_blank" rel="noreferrer">
           View cars
         </a>
-      </section>
-    </div>
-  );
-}
-
-function TopUpModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => Promise<void> }) {
-  const [amount, setAmount] = useState("50.00");
-  const [note, setNote] = useState("Sandbox top-up");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  async function submit() {
-    setLoading(true);
-    setError("");
-    try {
-      await topUpWallet({ amount, note });
-      await onSuccess();
-      onClose();
-    } catch {
-      setError("Top-up failed. Check amount.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <div className="bonusOverlay" role="presentation" onClick={onClose}>
-      <section
-        className="transferModal"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Fill up balance"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <button className="bonusClose" type="button" aria-label="Close top-up" onClick={onClose}>
-          <IconClose />
-        </button>
-
-        <h2 className="transferTitle">Fill up balance</h2>
-
-        <form className="transferForm" onSubmit={(event) => event.preventDefault()}>
-          <label className="transferField">
-            <span className="transferLabel">Amount</span>
-            <input
-              className="transferInput"
-              type="text"
-              value={amount}
-              onChange={(event) => setAmount(event.target.value)}
-            />
-          </label>
-
-          <label className="transferField">
-            <span className="transferLabel">Note</span>
-            <input
-              className="transferInput"
-              type="text"
-              value={note}
-              onChange={(event) => setNote(event.target.value)}
-            />
-          </label>
-
-          <button className="transferSubmit" type="button" onClick={() => void submit()}>
-            {loading ? "Please wait..." : "Top up"}
-          </button>
-          {error ? <p className="statusError">{error}</p> : null}
-        </form>
       </section>
     </div>
   );

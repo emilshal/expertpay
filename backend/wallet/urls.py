@@ -3,6 +3,9 @@ from django.urls import path
 from .views import (
     BalanceView,
     BankAccountListCreateView,
+    DepositInstructionsView,
+    DepositListView,
+    DepositSyncView,
     TransactionListView,
     WalletTopUpView,
     WithdrawalCreateView,
@@ -14,6 +17,9 @@ from .views import (
 urlpatterns = [
     path("balance/", BalanceView.as_view(), name="wallet-balance"),
     path("bank-accounts/", BankAccountListCreateView.as_view(), name="bank-account-list-create"),
+    path("deposit-instructions/", DepositInstructionsView.as_view(), name="deposit-instructions"),
+    path("deposits/", DepositListView.as_view(), name="deposit-list"),
+    path("deposits/sync/", DepositSyncView.as_view(), name="deposit-sync"),
     path("transactions/", TransactionListView.as_view(), name="transaction-list"),
     path("top-up/", WalletTopUpView.as_view(), name="wallet-top-up"),
     path("withdrawals/", WithdrawalCreateView.as_view(), name="withdrawal-create"),
