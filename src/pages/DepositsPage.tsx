@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   depositInstructions,
   depositsList,
@@ -8,6 +9,7 @@ import {
 } from "../lib/api";
 
 export default function DepositsPage() {
+  const navigate = useNavigate();
   const [instructions, setInstructions] = useState<DepositInstruction | null>(null);
   const [deposits, setDeposits] = useState<DepositItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -61,12 +63,20 @@ export default function DepositsPage() {
     <section className="card">
       <div className="cardTitleRow">
         <h1>Deposits</h1>
-        <button className="btn btnGhost" type="button" onClick={() => void runSync()}>
-          {loading ? "Syncing..." : "Sync from BoG"}
-        </button>
+        <div className="toolbarRow">
+          <button className="btn btnGhost" type="button" onClick={() => navigate("/card-topup")}>
+            Card top-up
+          </button>
+          <button className="btn btnGhost" type="button" onClick={() => navigate("/deposit-review")}>
+            Review Queue
+          </button>
+          <button className="btn btnGhost" type="button" onClick={() => void runSync()}>
+            {loading ? "Syncing..." : "Sync from BoG"}
+          </button>
+        </div>
       </div>
 
-      <p className="muted">Send a bank transfer to your company account and include the exact reference code.</p>
+      <p className="muted">Send a bank transfer to your company account, or use card top-up through BoG checkout.</p>
 
       {error ? <p className="statusError">{error}</p> : null}
       {message ? <p className="statusHint">{message}</p> : null}

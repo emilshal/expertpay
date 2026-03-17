@@ -2,6 +2,7 @@ from rest_framework import serializers
 
 from .models import (
     BankSimulatorPayout,
+    BogCardOrder,
     BogPayout,
     ExternalEvent,
     ProviderConnection,
@@ -79,8 +80,44 @@ class BogPayoutSerializer(serializers.ModelSerializer):
         )
 
 
+class BogCardOrderSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BogCardOrder
+        fields = (
+            "id",
+            "provider_order_id",
+            "external_order_id",
+            "parent_order_id",
+            "amount",
+            "currency",
+            "status",
+            "provider_order_status",
+            "redirect_url",
+            "details_url",
+            "callback_url",
+            "success_url",
+            "fail_url",
+            "save_card",
+            "transaction_id",
+            "payer_identifier",
+            "transfer_method",
+            "card_type",
+            "callback_received_at",
+            "completed_at",
+            "created_at",
+            "updated_at",
+        )
+
+
 class SubmitBankPayoutSerializer(serializers.Serializer):
     withdrawal_id = serializers.IntegerField(min_value=1)
+
+
+class CreateBogCardOrderSerializer(serializers.Serializer):
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=0.50)
+    currency = serializers.CharField(max_length=8, default="GEL")
+    save_card = serializers.BooleanField(default=False)
+    parent_order_id = serializers.CharField(required=False, allow_blank=True, max_length=120)
 
 
 class SyncBogPayoutStatusSerializer(serializers.Serializer):

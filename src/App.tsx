@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import AppShell from "./components/AppShell";
 import DashboardPage from "./pages/DashboardPage";
+import CardTopupPage from "./pages/CardTopupPage";
 import DepositsPage from "./pages/DepositsPage";
+import DepositReviewPage from "./pages/DepositReviewPage";
 import PayoutsPage from "./pages/PayoutsPage";
 import SettingsPage from "./pages/SettingsPage";
 import ConnectYandexPage from "./pages/ConnectYandexPage";
@@ -64,7 +66,9 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<DashboardPage />} />
+        <Route path="/card-topup" element={<CardTopupPage />} />
         <Route path="/deposits" element={<DepositsPage />} />
+        <Route path="/deposit-review" element={<DepositReviewPage />} />
         <Route path="/payouts" element={<PayoutsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/fleet-members" element={<FleetMembersPage />} />

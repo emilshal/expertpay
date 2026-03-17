@@ -8,6 +8,7 @@ class ProviderConnection(models.Model):
     class Provider(models.TextChoices):
         YANDEX = "yandex", "Yandex"
         BANK_OF_GEORGIA = "bog", "Bank of Georgia"
+        BOG_PAYMENTS = "bog_payments", "BoG Payments"
         BANK_SIMULATOR = "bank_sim", "Bank Simulator"
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="provider_connections")
@@ -200,3 +201,46 @@ class BogPayout(models.Model):
 
     def __str__(self):
         return f"bog:{self.withdrawal_id}:{self.status}"
+
+
+class BogCardOrder(models.Model):
+    class Status(models.TextChoices):
+        CREATED = "created", "Created"
+        PENDING = "pending", "Pending"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+        CANCELLED = "cancelled", "Cancelled"
+
+    connection = models.ForeignKey(ProviderConnection, on_delete=models.CASCADE, related_name="bog_card_orders")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="bog_card_orders")
+    provider_order_id = models.CharField(max_length=120, unique=True)
+    external_order_id = models.CharField(max_length=120, db_index=True)
+    parent_order_id = models.CharField(max_length=120, blank=True)
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    currency = models.CharField(max_length=8, default="GEL")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.CREATED)
+    provider_order_status = models.CharField(max_length=80, blank=True)
+    redirect_url = models.TextField(blank=True)
+    details_url = models.TextField(blank=True)
+    callback_url = models.TextField(blank=True)
+    success_url = models.TextField(blank=True)
+    fail_url = models.TextField(blank=True)
+    save_card = models.BooleanField(default=False)
+    transaction_id = models.CharField(max_length=120, blank=True)
+    payer_identifier = models.CharField(max_length=64, blank=True)
+    transfer_method = models.CharField(max_length=32, blank=True)
+    card_type = models.CharField(max_length=32, blank=True)
+    raw_request = models.JSONField(default=dict, blank=True)
+    raw_response = models.JSONField(default=dict, blank=True)
+    latest_details = models.JSONField(default=dict, blank=True)
+    latest_callback = models.JSONField(default=dict, blank=True)
+    callback_received_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"bog-card:{self.user_id}:{self.provider_order_id}:{self.status}"

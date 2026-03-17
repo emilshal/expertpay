@@ -576,6 +576,13 @@ body::after {
   margin-bottom: 10px;
 }
 
+.toolbarRow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .txList {
   display: grid;
   gap: 8px;
@@ -591,6 +598,11 @@ body::after {
   background: rgba(10, 15, 29, 0.35);
 }
 
+.txRowStacked {
+  align-items: stretch;
+  flex-direction: column;
+}
+
 .txRowButton {
   width: 100%;
   border: 0;
@@ -601,6 +613,17 @@ body::after {
 
 .txRowButton:hover {
   background: rgba(18, 27, 49, 0.52);
+}
+
+.reviewMatchControls {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.reviewMatchSelect {
+  flex: 1;
+  min-width: 0;
 }
 
 .txMain {
@@ -945,6 +968,23 @@ select.transferInput {
   background: linear-gradient(180deg, rgba(50, 153, 255, 0.98), rgba(29, 110, 222, 0.98));
 }
 
+.cardTopupForm {
+  margin-top: 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.cardTopupField {
+  display: grid;
+  gap: 8px;
+}
+
+.cardTopupActions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 @keyframes starTwinkle {
   0% {
     opacity: 0.62;
@@ -976,9 +1016,32 @@ select.transferInput {
     flex-direction: column;
   }
 
+  .toolbarRow {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .toolbarRow .btn {
+    flex: 1;
+  }
+
   .txRow {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .reviewMatchControls {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .cardTopupActions {
+    width: 100%;
+  }
+
+  .cardTopupActions .btn {
+    flex: 1;
   }
 
   .txAmount {

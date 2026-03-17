@@ -19,18 +19,14 @@ from django.utils.dateparse import parse_date, parse_datetime
 from django.utils import timezone
 
 from ledger.models import LedgerAccount
-from ledger.services import (
-    create_ledger_entry,
-    ensure_opening_entry,
-    get_account_balance,
-    get_or_create_user_ledger_account,
-)
+from ledger.services import create_ledger_entry, ensure_opening_entry, get_account_balance, get_or_create_user_ledger_account
 from wallet.models import Wallet, WithdrawalRequest
 from wallet.models import Deposit, IncomingBankTransfer
-from wallet.services import build_wallet_deposit_reference
+from wallet.services import build_wallet_deposit_reference, complete_bank_deposit
 
 from .models import (
     BogPayout,
+    BogCardOrder,
     BankSimulatorPayout,
     ExternalEvent,
     ProviderConnection,
@@ -167,6 +163,93 @@ def test_live_bog_token_connection():
         }
 
 
+def _bog_payments_missing_env_vars():
+    missing = []
+    if not settings.BOG_PAYMENTS_TOKEN_URL:
+        missing.append("BOG_PAYMENTS_TOKEN_URL")
+    if not settings.BOG_PAYMENTS_BASE_URL:
+        missing.append("BOG_PAYMENTS_BASE_URL")
+    if not settings.BOG_PAYMENTS_CLIENT_ID:
+        missing.append("BOG_PAYMENTS_CLIENT_ID")
+    if not settings.BOG_PAYMENTS_CLIENT_SECRET:
+        missing.append("BOG_PAYMENTS_CLIENT_SECRET")
+    if not settings.BOG_PAYMENTS_CALLBACK_URL:
+        missing.append("BOG_PAYMENTS_CALLBACK_URL")
+    return missing
+
+
+def test_live_bog_payments_token_connection():
+    missing = _bog_payments_missing_env_vars()
+    callback_only = {"BOG_PAYMENTS_CALLBACK_URL"}
+    if missing and not set(missing).issubset(callback_only):
+        return {
+            "ok": False,
+            "configured": False,
+            "provider": "bog_payments",
+            "http_status": None,
+            "endpoint": settings.BOG_PAYMENTS_TOKEN_URL or "",
+            "detail": f"Missing BoG Payments settings: {', '.join(missing)}",
+        }
+
+    credentials = f"{settings.BOG_PAYMENTS_CLIENT_ID}:{settings.BOG_PAYMENTS_CLIENT_SECRET}".encode("utf-8")
+    basic_auth = base64.b64encode(credentials).decode("ascii")
+    request = Request(
+        url=settings.BOG_PAYMENTS_TOKEN_URL,
+        method="POST",
+        data=urlencode({"grant_type": "client_credentials"}).encode("utf-8"),
+        headers={
+            "Authorization": f"Basic {basic_auth}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+
+    try:
+        with urlopen(request, timeout=settings.BOG_PAYMENTS_REQUEST_TIMEOUT_SECONDS) as response:
+            payload = _parse_json_response(response)
+            access_token = str(payload.get("access_token") or "")
+            ok = bool(access_token)
+            return {
+                "ok": ok,
+                "configured": True,
+                "provider": "bog_payments",
+                "http_status": getattr(response, "status", 200),
+                "endpoint": settings.BOG_PAYMENTS_TOKEN_URL,
+                "detail": "BoG Payments token request succeeded." if ok else "Token response did not include access_token.",
+                "response": {
+                    "token_type": payload.get("token_type"),
+                    "expires_in": payload.get("expires_in"),
+                    "access_token_received": ok,
+                    "access_token": access_token if ok else "",
+                },
+            }
+    except HTTPError as exc:
+        parsed_body = {}
+        body_text = ""
+        try:
+            body_text = exc.read().decode("utf-8", errors="replace")
+            parsed_body = json.loads(body_text) if body_text else {}
+        except json.JSONDecodeError:
+            parsed_body = {"raw": body_text[:1000]} if body_text else {}
+        return {
+            "ok": False,
+            "configured": True,
+            "provider": "bog_payments",
+            "http_status": exc.code,
+            "endpoint": settings.BOG_PAYMENTS_TOKEN_URL,
+            "detail": "BoG Payments token request failed.",
+            "response": parsed_body,
+        }
+    except URLError as exc:
+        return {
+            "ok": False,
+            "configured": True,
+            "provider": "bog_payments",
+            "http_status": None,
+            "endpoint": settings.BOG_PAYMENTS_TOKEN_URL,
+            "detail": f"BoG Payments token request could not reach host: {exc.reason}",
+        }
+
+
 def _bog_cache_key(connection: ProviderConnection):
     return f"integrations:bog:token:{connection.id}"
 
@@ -204,6 +287,109 @@ def get_valid_bog_access_token(*, connection: ProviderConnection, force_refresh:
     ttl = max(60, int(token_payload.get("expires_in") or 1800) - 60)
     cache.set(cache_key, token_payload, ttl)
     return str(token_payload["access_token"])
+
+
+def _bog_payments_cache_key(connection: ProviderConnection):
+    return f"integrations:bog:payments:token:{connection.id}"
+
+
+def _request_new_bog_payments_access_token():
+    result = test_live_bog_payments_token_connection()
+    if not result.get("ok"):
+        raise ValueError(result.get("detail") or "BoG Payments token request failed.")
+    response = result.get("response") or {}
+    access_token = str(response.get("access_token") or "")
+    if not access_token:
+        raise ValueError("BoG Payments token response did not include access_token.")
+    expires_in = int(response.get("expires_in") or 0)
+    return {
+        "access_token": access_token,
+        "token_type": response.get("token_type") or "Bearer",
+        "expires_in": expires_in,
+        "cached_until": (timezone.now() + timedelta(seconds=max(0, expires_in - 60))).isoformat(),
+    }
+
+
+def get_valid_bog_payments_access_token(*, connection: ProviderConnection, force_refresh: bool = False):
+    cache_key = _bog_payments_cache_key(connection)
+    if not force_refresh:
+        token_payload = cache.get(cache_key)
+        if isinstance(token_payload, dict):
+            cached_until = parse_datetime(str(token_payload.get("cached_until") or "")) if token_payload.get("cached_until") else None
+            if cached_until is not None and timezone.is_naive(cached_until):
+                cached_until = timezone.make_aware(cached_until, timezone.get_current_timezone())
+            if token_payload.get("access_token") and cached_until and cached_until > timezone.now():
+                return str(token_payload["access_token"])
+
+    token_payload = _request_new_bog_payments_access_token()
+    ttl = max(60, int(token_payload.get("expires_in") or 1800) - 60)
+    cache.set(cache_key, token_payload, ttl)
+    return str(token_payload["access_token"])
+
+
+def _bog_payments_request(
+    *,
+    connection: ProviderConnection,
+    method: str,
+    endpoint: str,
+    body=None,
+    retry_on_401: bool = True,
+    extra_headers: dict | None = None,
+):
+    token = get_valid_bog_payments_access_token(connection=connection)
+    url = f"{settings.BOG_PAYMENTS_BASE_URL}{endpoint}"
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Accept-Language": "en",
+    }
+    if extra_headers:
+        headers.update(extra_headers)
+
+    request = Request(
+        url=url,
+        method=method,
+        data=data,
+        headers=headers,
+    )
+    try:
+        with urlopen(request, timeout=settings.BOG_PAYMENTS_REQUEST_TIMEOUT_SECONDS) as response:
+            return {
+                "ok": 200 <= getattr(response, "status", 200) < 300,
+                "http_status": getattr(response, "status", 200),
+                "body": _parse_bog_response(response),
+            }
+    except HTTPError as exc:
+        parsed_body = {}
+        body_text = ""
+        try:
+            body_text = exc.read().decode("utf-8", errors="replace")
+            parsed_body = json.loads(body_text) if body_text else {}
+        except json.JSONDecodeError:
+            parsed_body = {"raw": body_text[:2000]} if body_text else {}
+        if exc.code == 401 and retry_on_401:
+            get_valid_bog_payments_access_token(connection=connection, force_refresh=True)
+            return _bog_payments_request(
+                connection=connection,
+                method=method,
+                endpoint=endpoint,
+                body=body,
+                retry_on_401=False,
+                extra_headers=extra_headers,
+            )
+        return {
+            "ok": False,
+            "http_status": exc.code,
+            "body": parsed_body,
+        }
+    except URLError as exc:
+        return {
+            "ok": False,
+            "http_status": None,
+            "body": {"error": str(exc.reason)},
+        }
 
 
 def _parse_bog_response(response):
@@ -322,52 +508,6 @@ def _find_user_by_deposit_reference(reference_text: str):
     return user, match.group(0)
 
 
-def _complete_bank_deposit(*, user, provider_transaction_id: str, amount: Decimal, currency: str, reference_code: str, incoming_transfer, raw_payload: dict, note: str, payer_name: str, payer_inn: str, payer_account_number: str):
-    wallet, _ = Wallet.objects.get_or_create(user=user)
-    ledger_account = get_or_create_user_ledger_account(user, currency)
-    ensure_opening_entry(ledger_account, wallet.balance, created_by=user)
-
-    with transaction.atomic():
-        locked_wallet = Wallet.objects.select_for_update().get(id=wallet.id)
-        locked_account = LedgerAccount.objects.select_for_update().get(id=ledger_account.id)
-        deposit, created = Deposit.objects.get_or_create(
-            provider_transaction_id=provider_transaction_id,
-            defaults={
-                "user": user,
-                "wallet": locked_wallet,
-                "incoming_transfer": incoming_transfer,
-                "amount": amount,
-                "currency": currency,
-                "status": Deposit.Status.COMPLETED,
-                "reference_code": reference_code,
-                "provider": "bog",
-                "payer_name": payer_name,
-                "payer_inn": payer_inn,
-                "payer_account_number": payer_account_number,
-                "note": note,
-                "raw_payload": raw_payload,
-            },
-        )
-        if created:
-            create_ledger_entry(
-                account=locked_account,
-                amount=amount,
-                entry_type="bank_deposit",
-                created_by=user,
-                reference_type="deposit",
-                reference_id=str(deposit.id),
-                metadata={
-                    "description": f"Bank deposit {provider_transaction_id}",
-                    "reference_code": reference_code,
-                },
-                idempotency_key=f"bog:deposit:{provider_transaction_id}",
-            )
-            locked_wallet.balance = get_account_balance(locked_account, locked_wallet.currency)
-            locked_wallet.save(update_fields=["balance", "updated_at"])
-
-        return deposit, created
-
-
 def sync_bog_deposits(*, connection: ProviderConnection, use_statement: bool = False, start_date=None, end_date=None, currency: str = "GEL"):
     missing = _bog_missing_env_vars()
     if not settings.BOG_SOURCE_ACCOUNT_NUMBER:
@@ -450,8 +590,9 @@ def sync_bog_deposits(*, connection: ProviderConnection, use_statement: bool = F
         if match_status != IncomingBankTransfer.MatchStatus.MATCHED or matched_user is None:
             continue
 
-        deposit, created = _complete_bank_deposit(
+        deposit, created = complete_bank_deposit(
             user=matched_user,
+            provider="bog",
             provider_transaction_id=provider_transaction_id,
             amount=amount,
             currency=currency,
@@ -481,6 +622,227 @@ def sync_bog_deposits(*, connection: ProviderConnection, use_statement: bool = F
         "endpoint": endpoint,
         "errors": None if response.get("ok") else response.get("body"),
     }
+
+
+def _map_bog_card_order_status(provider_status: str):
+    normalized = (provider_status or "").strip().lower()
+    if normalized in {"completed", "success", "paid"}:
+        return BogCardOrder.Status.COMPLETED
+    if normalized in {"created", "pending", "processing", "in_progress", "authorized"}:
+        return BogCardOrder.Status.PENDING
+    if normalized in {"cancelled", "canceled"}:
+        return BogCardOrder.Status.CANCELLED
+    if normalized in {"rejected", "failed", "error", "expired"}:
+        return BogCardOrder.Status.FAILED
+    return BogCardOrder.Status.PENDING
+
+
+def _extract_card_order_status(body: dict):
+    order_status = body.get("order_status")
+    if isinstance(order_status, dict):
+        return str(order_status.get("key") or order_status.get("value") or "")
+    return str(body.get("status") or "")
+
+
+def _extract_card_payment_detail(body: dict):
+    detail = body.get("payment_detail")
+    return detail if isinstance(detail, dict) else {}
+
+
+def create_bog_card_order(*, connection: ProviderConnection, user, amount: Decimal, currency: str = "GEL", save_card: bool = False, parent_order_id: str = ""):
+    missing = _bog_payments_missing_env_vars()
+    if missing:
+        raise ValueError(f"Missing BoG Payments settings: {', '.join(sorted(set(missing)))}")
+
+    external_order_id = f"cardtopup-{user.id}-{uuid.uuid4().hex[:12]}"
+    request_payload = {
+        "callback_url": settings.BOG_PAYMENTS_CALLBACK_URL,
+        "external_order_id": external_order_id,
+        "capture": "automatic",
+        "purchase_units": {
+            "currency": currency,
+            "total_amount": float(amount),
+            "basket": [
+                {
+                    "quantity": 1,
+                    "unit_price": float(amount),
+                    "product_id": f"expertpay_topup_{user.id}",
+                }
+            ],
+        },
+        "payment_method": ["card"],
+        "ttl": settings.BOG_PAYMENTS_DEFAULT_TTL_MINUTES,
+    }
+    redirect_urls = {}
+    if settings.BOG_PAYMENTS_SUCCESS_URL:
+        redirect_urls["success"] = settings.BOG_PAYMENTS_SUCCESS_URL
+    if settings.BOG_PAYMENTS_FAIL_URL:
+        redirect_urls["fail"] = settings.BOG_PAYMENTS_FAIL_URL
+    if redirect_urls:
+        request_payload["redirect_urls"] = redirect_urls
+    if parent_order_id:
+        request_payload["parent_order_id"] = parent_order_id
+
+    response = _bog_payments_request(
+        connection=connection,
+        method="POST",
+        endpoint=f"/ecommerce/orders/{parent_order_id}" if parent_order_id else "/ecommerce/orders",
+        body=request_payload,
+        extra_headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+    if not response.get("ok"):
+        raise ValueError(
+            (response.get("body") or {}).get("message")
+            or (response.get("body") or {}).get("detail")
+            or "BoG card order request failed."
+        )
+
+    body = response.get("body") or {}
+    links = body.get("_links") or {}
+    details_link = ((links.get("details") or {}) if isinstance(links, dict) else {}) or {}
+    redirect_link = ((links.get("redirect") or {}) if isinstance(links, dict) else {}) or {}
+    provider_order_id = str(body.get("id") or "")
+    if not provider_order_id:
+        raise ValueError("BoG card order response did not include an order id.")
+
+    order, _ = BogCardOrder.objects.update_or_create(
+        provider_order_id=provider_order_id,
+        defaults={
+            "connection": connection,
+            "user": user,
+            "external_order_id": external_order_id,
+            "parent_order_id": parent_order_id,
+            "amount": amount,
+            "currency": currency,
+            "status": BogCardOrder.Status.CREATED,
+            "provider_order_status": "created",
+            "redirect_url": str(redirect_link.get("href") or ""),
+            "details_url": str(details_link.get("href") or ""),
+            "callback_url": settings.BOG_PAYMENTS_CALLBACK_URL,
+            "success_url": settings.BOG_PAYMENTS_SUCCESS_URL,
+            "fail_url": settings.BOG_PAYMENTS_FAIL_URL,
+            "save_card": save_card,
+            "raw_request": request_payload,
+            "raw_response": body,
+        },
+    )
+
+    if save_card:
+        _bog_payments_request(
+            connection=connection,
+            method="PUT",
+            endpoint=f"/orders/{provider_order_id}/cards",
+            extra_headers={"Idempotency-Key": str(uuid.uuid4())},
+        )
+
+    return order
+
+
+def sync_bog_card_order(*, order: BogCardOrder):
+    response = _bog_payments_request(
+        connection=order.connection,
+        method="GET",
+        endpoint=f"/receipt/{order.provider_order_id}",
+    )
+    if not response.get("ok"):
+        raise ValueError(
+            (response.get("body") or {}).get("message")
+            or (response.get("body") or {}).get("detail")
+            or "Unable to fetch BoG card payment details."
+        )
+
+    body = response.get("body") or {}
+    provider_status = _extract_card_order_status(body)
+    mapped_status = _map_bog_card_order_status(provider_status)
+    payment_detail = _extract_card_payment_detail(body)
+    transfer_method = payment_detail.get("transfer_method")
+    transfer_method_key = transfer_method.get("key") if isinstance(transfer_method, dict) else str(transfer_method or "")
+
+    with transaction.atomic():
+        locked_order = BogCardOrder.objects.select_for_update().get(id=order.id)
+        locked_order.status = mapped_status
+        locked_order.provider_order_status = provider_status
+        locked_order.latest_details = body
+        locked_order.transaction_id = str(payment_detail.get("transaction_id") or locked_order.transaction_id or "")
+        locked_order.payer_identifier = str(payment_detail.get("payer_identifier") or locked_order.payer_identifier or "")
+        locked_order.transfer_method = str(transfer_method_key or locked_order.transfer_method or "")
+        locked_order.card_type = str(payment_detail.get("card_type") or locked_order.card_type or "")
+        if mapped_status == BogCardOrder.Status.COMPLETED and locked_order.completed_at is None:
+            complete_bank_deposit(
+                user=locked_order.user,
+                provider="bog_card",
+                provider_transaction_id=locked_order.provider_order_id,
+                amount=locked_order.amount,
+                currency=locked_order.currency,
+                reference_code=locked_order.external_order_id,
+                incoming_transfer=None,
+                raw_payload=body,
+                note=f"BoG card top-up {locked_order.provider_order_id}",
+                payer_name="Card payment",
+                payer_inn="",
+                payer_account_number="",
+            )
+            locked_order.completed_at = timezone.now()
+        locked_order.save(
+            update_fields=[
+                "status",
+                "provider_order_status",
+                "latest_details",
+                "transaction_id",
+                "payer_identifier",
+                "transfer_method",
+                "card_type",
+                "completed_at",
+                "updated_at",
+            ]
+        )
+
+    return locked_order
+
+
+def verify_bog_payments_callback_signature(*, raw_body: bytes, signature: str):
+    if not signature:
+        return True
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+
+    public_key = serialization.load_pem_public_key(settings.BOG_PAYMENTS_CALLBACK_PUBLIC_KEY.encode("utf-8"))
+    try:
+        public_key.verify(
+            base64.b64decode(signature),
+            raw_body,
+            padding.PKCS1v15(),
+            hashes.SHA256(),
+        )
+        return True
+    except InvalidSignature:
+        return False
+
+
+def handle_bog_payments_callback(*, raw_body: bytes, signature: str = ""):
+    if signature and not verify_bog_payments_callback_signature(raw_body=raw_body, signature=signature):
+        raise ValueError("Invalid BoG callback signature.")
+
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError("Callback payload is not valid JSON.") from exc
+
+    body = payload.get("body") or {}
+    provider_order_id = str(body.get("order_id") or "")
+    if not provider_order_id:
+        raise ValueError("Callback payload did not include order_id.")
+
+    order = BogCardOrder.objects.select_related("connection").filter(provider_order_id=provider_order_id).first()
+    if order is None:
+        raise ValueError("BoG card order not found.")
+
+    order.latest_callback = payload
+    order.callback_received_at = timezone.now()
+    order.save(update_fields=["latest_callback", "callback_received_at", "updated_at"])
+
+    return sync_bog_card_order(order=order)
 
 
 def _infer_bog_bank_code(bank_name: str):

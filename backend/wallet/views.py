@@ -20,11 +20,13 @@ from ledger.services import (
 from payments.models import InternalTransfer
 from integrations.models import ProviderConnection
 from integrations.services import sync_bog_deposits
-from .models import BankAccount, Deposit, Wallet, WithdrawalRequest
+from .models import BankAccount, Deposit, IncomingBankTransfer, Wallet, WithdrawalRequest
 from .serializers import (
     BankAccountSerializer,
     DepositInstructionSerializer,
     DepositSerializer,
+    IncomingBankTransferMatchSerializer,
+    IncomingBankTransferSerializer,
     WalletTopUpSerializer,
     TransactionFeedSerializer,
     WalletSerializer,
@@ -32,7 +34,7 @@ from .serializers import (
     WithdrawalSerializer,
     WithdrawalStatusUpdateSerializer,
 )
-from .services import build_wallet_deposit_reference
+from .services import build_wallet_deposit_reference, complete_bank_deposit
 
 
 def _transaction_kind(entry_type):
@@ -394,6 +396,108 @@ class DepositListView(generics.ListAPIView):
 
     def get_queryset(self):
         return Deposit.objects.filter(user=self.request.user)
+
+
+class UnmatchedIncomingTransferListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = IncomingBankTransferSerializer
+
+    def get_queryset(self):
+        binding = get_request_fleet_binding(user=self.request.user, request=self.request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.ADMIN):
+            return IncomingBankTransfer.objects.none()
+        return IncomingBankTransfer.objects.filter(
+            provider=ProviderConnection.Provider.BANK_OF_GEORGIA,
+            match_status=IncomingBankTransfer.MatchStatus.UNMATCHED,
+        )
+
+    def list(self, request, *args, **kwargs):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.ADMIN):
+            return Response({"detail": "Only admin/owner can review unmatched bank transfers."}, status=403)
+        return super().list(request, *args, **kwargs)
+
+
+class IncomingTransferManualMatchView(APIView):
+    permission_classes = [IsAuthenticated]
+    throttle_scope = "money_write"
+
+    def post(self, request, transfer_id):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.ADMIN):
+            return Response({"detail": "Only admin/owner can manually match bank transfers."}, status=403)
+
+        fleet_name = (request.headers.get("X-Fleet-Name") or request.query_params.get("fleet_name") or "").strip()
+        if not fleet_name:
+            return Response({"detail": "Fleet name is required to match a transfer."}, status=400)
+
+        serializer = IncomingBankTransferMatchSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        phone_number = serializer.validated_data["phone_number"].strip()
+
+        transfer = IncomingBankTransfer.objects.filter(id=transfer_id).first()
+        if transfer is None:
+            return Response({"detail": "Incoming transfer not found."}, status=404)
+        if transfer.match_status != IncomingBankTransfer.MatchStatus.UNMATCHED:
+            return Response({"detail": "Incoming transfer is already finalized."}, status=400)
+        if transfer.amount <= Decimal("0.00"):
+            return Response({"detail": "Only positive incoming transfers can be matched."}, status=400)
+
+        target_binding = (
+            FleetPhoneBinding.objects.select_related("user")
+            .filter(
+                fleet__name__iexact=fleet_name,
+                phone_number=phone_number,
+                is_active=True,
+                user__is_active=True,
+            )
+            .order_by("-created_at", "-id")
+            .first()
+        )
+        if target_binding is None:
+            return Response({"detail": "Phone number was not found in the selected fleet."}, status=404)
+
+        transfer.user = target_binding.user
+        transfer.match_status = IncomingBankTransfer.MatchStatus.MATCHED
+        transfer.save(update_fields=["user", "match_status", "updated_at"])
+
+        deposit, _ = complete_bank_deposit(
+            user=target_binding.user,
+            provider=transfer.provider,
+            provider_transaction_id=transfer.provider_transaction_id,
+            amount=transfer.amount,
+            currency=transfer.currency,
+            reference_code=build_wallet_deposit_reference(target_binding.user),
+            incoming_transfer=transfer,
+            raw_payload=transfer.raw_payload,
+            note=transfer.reference_text or "Manual deposit match",
+            payer_name=transfer.payer_name,
+            payer_inn=transfer.payer_inn,
+            payer_account_number=transfer.payer_account_number,
+        )
+
+        log_audit(
+            user=request.user,
+            action="incoming_transfer_matched",
+            resource_type="incoming_bank_transfer",
+            resource_id=transfer.id,
+            request_id=request.headers.get("X-Request-ID", ""),
+            ip_address=request.META.get("REMOTE_ADDR"),
+            metadata={
+                "matched_phone_number": phone_number,
+                "matched_user_id": target_binding.user_id,
+                "deposit_id": deposit.id,
+                "fleet_name": fleet_name,
+            },
+        )
+
+        return Response(
+            {
+                "transfer": IncomingBankTransferSerializer(transfer).data,
+                "deposit": DepositSerializer(deposit).data,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class DepositSyncView(APIView):

@@ -14,6 +14,7 @@ from wallet.models import BankAccount, Deposit, IncomingBankTransfer, Wallet, Wi
 
 from .models import (
     BankSimulatorPayout,
+    BogCardOrder,
     BogPayout,
     ExternalEvent,
     ProviderConnection,
@@ -22,7 +23,7 @@ from .models import (
     YandexTransactionCategory,
     YandexTransactionRecord,
 )
-from .services import get_valid_bog_access_token, live_sync_yandex_data, sync_bog_deposits
+from .services import get_valid_bog_access_token, live_sync_yandex_data, sync_bog_card_order, sync_bog_deposits
 
 
 User = get_user_model()
@@ -614,6 +615,102 @@ class BogTokenApiTests(APITestCase):
         self.assertEqual(mocked_test.call_count, 1)
 
 
+class BogCardPaymentsApiTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="bog_card_user", password="pass1234")
+        self.client.force_authenticate(self.user)
+        self.fleet = Fleet.objects.create(name="Card Fleet")
+        FleetPhoneBinding.objects.create(
+            fleet=self.fleet,
+            user=self.user,
+            phone_number="598900111",
+            role=FleetPhoneBinding.Role.ADMIN,
+            is_active=True,
+        )
+        self.connection = ProviderConnection.objects.create(
+            user=self.user,
+            provider=ProviderConnection.Provider.BOG_PAYMENTS,
+            external_account_id="bog-payments-card-user",
+            status="active",
+            config={"mode": "live"},
+        )
+
+    @patch("integrations.views.test_live_bog_payments_token_connection")
+    def test_test_payments_token_endpoint_updates_connection_status(self, mocked_test):
+        mocked_test.return_value = {
+            "ok": True,
+            "configured": True,
+            "provider": "bog_payments",
+            "http_status": 200,
+            "endpoint": "https://oauth2.bog.ge/auth/realms/bog/protocol/openid-connect/token",
+            "detail": "BoG Payments token request succeeded.",
+            "response": {
+                "token_type": "Bearer",
+                "expires_in": 1800,
+                "access_token_received": True,
+                "access_token": "hidden-token",
+            },
+        }
+
+        response = self.client.post(reverse("bog-payments-test-token"), data={}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["test"]["ok"])
+        self.assertTrue(response.data["test"]["response"]["access_token_received"])
+        self.assertNotIn("access_token", response.data["test"]["response"])
+
+        self.connection.refresh_from_db()
+        self.assertEqual(self.connection.status, "active")
+        self.assertIn("last_token_test", self.connection.config)
+
+    @patch("integrations.views.create_bog_card_order")
+    def test_create_card_order_endpoint_returns_redirect_url(self, mocked_create):
+        order = BogCardOrder.objects.create(
+            connection=self.connection,
+            user=self.user,
+            provider_order_id="order-1",
+            external_order_id="external-1",
+            amount=Decimal("25.00"),
+            currency="GEL",
+            status=BogCardOrder.Status.CREATED,
+            redirect_url="https://pay.example/redirect",
+            details_url="https://pay.example/details",
+        )
+        mocked_create.return_value = order
+
+        response = self.client.post(
+            reverse("bog-payments-create-order"),
+            data={"amount": "25.00", "currency": "GEL", "save_card": False},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["provider_order_id"], "order-1")
+        self.assertEqual(response.data["redirect_url"], "https://pay.example/redirect")
+
+    @patch("integrations.views.handle_bog_payments_callback")
+    def test_callback_endpoint_accepts_unsigned_payload(self, mocked_handle):
+        order = BogCardOrder.objects.create(
+            connection=self.connection,
+            user=self.user,
+            provider_order_id="order-callback-1",
+            external_order_id="external-callback-1",
+            amount=Decimal("10.00"),
+            currency="GEL",
+            status=BogCardOrder.Status.COMPLETED,
+        )
+        mocked_handle.return_value = order
+
+        response = self.client.post(
+            reverse("bog-payments-callback"),
+            data={"event": "order_payment"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["ok"])
+        self.assertEqual(response.data["order_id"], "order-callback-1")
+
+
 class BogPayoutApiTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="bog_payout_user", password="pass1234")
@@ -861,3 +958,52 @@ class BogDepositSyncServiceTests(APITestCase):
 
         account = LedgerAccount.objects.get(user=self.user)
         self.assertEqual(LedgerEntry.objects.filter(account=account, entry_type="bank_deposit").count(), 1)
+
+
+class BogCardOrderServiceTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="card_sync_user", password="pass1234")
+        self.connection = ProviderConnection.objects.create(
+            user=self.user,
+            provider=ProviderConnection.Provider.BOG_PAYMENTS,
+            external_account_id="bog-payments-sync",
+            status="active",
+            config={"mode": "live"},
+        )
+
+    @patch("integrations.services._bog_payments_request")
+    def test_sync_bog_card_order_completed_credits_wallet(self, mocked_request):
+        mocked_request.return_value = {
+            "ok": True,
+            "http_status": 200,
+            "body": {
+                "status": "completed",
+                "payment_detail": {
+                    "transaction_id": "txn-1001",
+                    "payer_identifier": "payer-1",
+                    "transfer_method": {"key": "card"},
+                    "card_type": "visa",
+                },
+            },
+        }
+        order = BogCardOrder.objects.create(
+            connection=self.connection,
+            user=self.user,
+            provider_order_id="card-order-1001",
+            external_order_id="cardtopup-1001",
+            amount=Decimal("32.40"),
+            currency="GEL",
+            status=BogCardOrder.Status.CREATED,
+        )
+
+        synced = sync_bog_card_order(order=order)
+
+        self.assertEqual(synced.status, BogCardOrder.Status.COMPLETED)
+        self.assertEqual(synced.transaction_id, "txn-1001")
+        self.assertEqual(synced.transfer_method, "card")
+
+        wallet = Wallet.objects.get(user=self.user)
+        self.assertEqual(wallet.balance, Decimal("32.40"))
+        deposit = Deposit.objects.get(user=self.user, provider="bog_card")
+        self.assertEqual(deposit.provider_transaction_id, "card-order-1001")
+        self.assertEqual(deposit.amount, Decimal("32.40"))

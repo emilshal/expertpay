@@ -10,7 +10,7 @@ from accounts.models import Fleet, FleetPhoneBinding
 from integrations.models import ProviderConnection
 from ledger.models import LedgerAccount, LedgerEntry
 
-from .models import Deposit, Wallet
+from .models import Deposit, IncomingBankTransfer, Wallet
 
 
 User = get_user_model()
@@ -85,6 +85,14 @@ class WalletDepositApiTests(APITestCase):
             role=FleetPhoneBinding.Role.ADMIN,
             is_active=True,
         )
+        self.other_user = User.objects.create_user(username="target_user", password="pass1234")
+        FleetPhoneBinding.objects.create(
+            fleet=self.fleet,
+            user=self.other_user,
+            phone_number="598955556",
+            role=FleetPhoneBinding.Role.DRIVER,
+            is_active=True,
+        )
 
     def test_deposit_instructions_return_account_and_reference(self):
         response = self.client.get(reverse("deposit-instructions"))
@@ -134,3 +142,60 @@ class WalletDepositApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]["provider_transaction_id"], "bog-doc-1")
+
+    def test_admin_can_list_unmatched_incoming_transfers(self):
+        IncomingBankTransfer.objects.create(
+            provider_transaction_id="bog-unmatched-1",
+            account_number="GE00BOG",
+            currency="GEL",
+            amount=Decimal("42.00"),
+            reference_text="missing reference",
+            match_status=IncomingBankTransfer.MatchStatus.UNMATCHED,
+        )
+
+        response = self.client.get(
+            reverse("incoming-transfer-unmatched"),
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["provider_transaction_id"], "bog-unmatched-1")
+
+    def test_driver_cannot_list_unmatched_incoming_transfers(self):
+        binding = FleetPhoneBinding.objects.get(user=self.user, fleet=self.fleet)
+        binding.role = FleetPhoneBinding.Role.DRIVER
+        binding.save(update_fields=["role"])
+
+        response = self.client.get(
+            reverse("incoming-transfer-unmatched"),
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_can_manually_match_unmatched_transfer(self):
+        wallet, _ = Wallet.objects.get_or_create(user=self.other_user)
+        transfer = IncomingBankTransfer.objects.create(
+            provider_transaction_id="bog-unmatched-2",
+            account_number="GE00BOG",
+            currency="GEL",
+            amount=Decimal("55.00"),
+            reference_text="cash deposit no code",
+            match_status=IncomingBankTransfer.MatchStatus.UNMATCHED,
+            payer_name="Test Payer",
+        )
+
+        response = self.client.post(
+            reverse("incoming-transfer-manual-match", args=[transfer.id]),
+            data={"phone_number": "598955556"},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+            HTTP_X_REQUEST_ID="req-manual-match-1",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        transfer.refresh_from_db()
+        wallet.refresh_from_db()
+        self.assertEqual(transfer.match_status, IncomingBankTransfer.MatchStatus.MATCHED)
+        self.assertEqual(transfer.user_id, self.other_user.id)
+        self.assertEqual(wallet.balance, Decimal("55.00"))
+        self.assertEqual(Deposit.objects.filter(provider_transaction_id="bog-unmatched-2").count(), 1)

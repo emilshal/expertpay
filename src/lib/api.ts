@@ -155,6 +155,24 @@ export type DepositItem = {
   created_at: string;
 };
 
+export type IncomingBankTransferItem = {
+  id: number;
+  provider: string;
+  provider_transaction_id: string;
+  account_number: string;
+  currency: string;
+  amount: string;
+  reference_text: string;
+  payer_name: string;
+  payer_inn: string;
+  payer_account_number: string;
+  booking_date: string | null;
+  value_date: string | null;
+  match_status: "matched" | "unmatched" | "ignored";
+  created_at: string;
+  updated_at: string;
+};
+
 export type TransactionFeedItem = {
   id: string;
   kind: string;
@@ -351,6 +369,31 @@ export type BogPayout = {
   updated_at: string;
 };
 
+export type BogCardOrder = {
+  id: number;
+  provider_order_id: string;
+  external_order_id: string;
+  parent_order_id: string;
+  amount: string;
+  currency: string;
+  status: "created" | "pending" | "completed" | "failed" | "cancelled";
+  provider_order_status: string;
+  redirect_url: string;
+  details_url: string;
+  callback_url: string;
+  success_url: string;
+  fail_url: string;
+  save_card: boolean;
+  transaction_id: string;
+  payer_identifier: string;
+  transfer_method: string;
+  card_type: string;
+  callback_received_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type ReconciliationSummary = {
   currency: string;
   wallet: {
@@ -534,6 +577,24 @@ export async function syncDeposits() {
     body: JSON.stringify({}),
     idempotent: true
   });
+}
+
+export async function unmatchedIncomingTransfers() {
+  return request<IncomingBankTransferItem[]>("/api/wallet/incoming-transfers/unmatched/");
+}
+
+export async function manualMatchIncomingTransfer(input: {
+  transfer_id: number;
+  phone_number: string;
+}) {
+  return request<{ transfer: IncomingBankTransferItem; deposit: DepositItem }>(
+    `/api/wallet/incoming-transfers/${input.transfer_id}/match/`,
+    {
+      method: "POST",
+      body: JSON.stringify({ phone_number: input.phone_number }),
+      idempotent: true
+    }
+  );
 }
 
 export async function walletTransactions() {
@@ -720,6 +781,50 @@ export async function testBogToken() {
     body: JSON.stringify({}),
     idempotent: true
   });
+}
+
+export async function testBogPaymentsToken() {
+  return request<{ connection: YandexConnection; test: Record<string, unknown> }>(
+    "/api/integrations/bog-payments/test-token/",
+    {
+      method: "POST",
+      body: JSON.stringify({}),
+      idempotent: true
+    }
+  );
+}
+
+export async function bogCardOrders() {
+  return request<BogCardOrder[]>("/api/integrations/bog-payments/orders/");
+}
+
+export async function createBogCardOrder(input: {
+  amount: string;
+  currency?: string;
+  save_card?: boolean;
+  parent_order_id?: string;
+}) {
+  return request<BogCardOrder>("/api/integrations/bog-payments/orders/create/", {
+    method: "POST",
+    body: JSON.stringify({
+      amount: input.amount,
+      currency: input.currency ?? "GEL",
+      save_card: input.save_card ?? false,
+      parent_order_id: input.parent_order_id ?? ""
+    }),
+    idempotent: true
+  });
+}
+
+export async function syncBogCardOrder(providerOrderId: string) {
+  return request<BogCardOrder>(
+    `/api/integrations/bog-payments/orders/${encodeURIComponent(providerOrderId)}/sync/`,
+    {
+      method: "POST",
+      body: JSON.stringify({}),
+      idempotent: true
+    }
+  );
 }
 
 export async function bogPayouts() {
