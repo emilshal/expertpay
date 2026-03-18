@@ -14,15 +14,29 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from django.utils.dateparse import parse_date, parse_datetime
 from django.utils import timezone
 
-from ledger.models import LedgerAccount
-from ledger.services import create_ledger_entry, ensure_opening_entry, get_account_balance, get_or_create_user_ledger_account
+from accounts.models import DriverFleetMembership, Fleet
+from ledger.models import LedgerAccount, LedgerEntry
+from ledger.services import (
+    create_ledger_entry,
+    ensure_opening_entry,
+    get_account_balance,
+    get_or_create_driver_available_account,
+    get_or_create_fleet_reserve_account,
+    get_or_create_platform_fee_account,
+    get_or_create_payout_clearing_account,
+    get_or_create_treasury_account,
+    get_or_create_user_ledger_account,
+    record_driver_earning_allocation,
+    reverse_driver_withdrawal_hold,
+    settle_driver_withdrawal,
+)
 from wallet.models import Wallet, WithdrawalRequest
 from wallet.models import Deposit, IncomingBankTransfer
-from wallet.services import build_wallet_deposit_reference, complete_bank_deposit
+from wallet.services import build_fleet_deposit_reference, build_wallet_deposit_reference, complete_bank_deposit, complete_fleet_bank_deposit
 
 from .models import (
     BogPayout,
@@ -38,6 +52,10 @@ from .models import (
 
 
 User = get_user_model()
+
+
+def _format_money(value: Decimal | str | int | float) -> str:
+    return f"{Decimal(str(value)).quantize(Decimal('0.01'))}"
 
 
 def _yandex_missing_env_vars():
@@ -508,6 +526,18 @@ def _find_user_by_deposit_reference(reference_text: str):
     return user, match.group(0)
 
 
+def _find_fleet_by_deposit_reference(reference_text: str):
+    if not reference_text:
+        return None, ""
+    prefix = re.escape((getattr(settings, "BOG_DEPOSIT_REFERENCE_PREFIX", "EXP") or "EXP").strip().upper())
+    match = re.search(rf"\b{prefix}-FLT-(\d{{6}})\b", reference_text.upper())
+    if not match:
+        return None, ""
+    fleet_id = int(match.group(1))
+    fleet = Fleet.objects.filter(id=fleet_id).first()
+    return fleet, match.group(0)
+
+
 def sync_bog_deposits(*, connection: ProviderConnection, use_statement: bool = False, start_date=None, end_date=None, currency: str = "GEL"):
     missing = _bog_missing_env_vars()
     if not settings.BOG_SOURCE_ACCOUNT_NUMBER:
@@ -556,22 +586,23 @@ def sync_bog_deposits(*, connection: ProviderConnection, use_statement: bool = F
         value_date = parse_date(str(value_date_raw)) if value_date_raw else None
 
         checked_count += 1
-        matched_user, matched_reference = _find_user_by_deposit_reference(reference_text)
+        matched_fleet, matched_reference = _find_fleet_by_deposit_reference(reference_text)
 
         if amount <= Decimal("0.00"):
             match_status = IncomingBankTransfer.MatchStatus.IGNORED
             ignored_count += 1
-        elif matched_user is not None:
+        elif matched_fleet is not None:
             match_status = IncomingBankTransfer.MatchStatus.MATCHED
             matched_count += 1
         else:
             match_status = IncomingBankTransfer.MatchStatus.UNMATCHED
             unmatched_count += 1
 
-        transfer, _ = IncomingBankTransfer.objects.update_or_create(
+        transfer, created_transfer = IncomingBankTransfer.objects.get_or_create(
             provider_transaction_id=provider_transaction_id,
             defaults={
-                "user": matched_user,
+                "user": connection.user if matched_fleet is not None else None,
+                "fleet": matched_fleet,
                 "provider": "bog",
                 "account_number": settings.BOG_SOURCE_ACCOUNT_NUMBER,
                 "currency": currency,
@@ -586,17 +617,56 @@ def sync_bog_deposits(*, connection: ProviderConnection, use_statement: bool = F
                 "raw_payload": record,
             },
         )
+        if not created_transfer:
+            transfer.provider = "bog"
+            transfer.account_number = settings.BOG_SOURCE_ACCOUNT_NUMBER
+            transfer.currency = currency
+            transfer.amount = amount
+            transfer.reference_text = reference_text
+            transfer.payer_name = payer_name
+            transfer.payer_inn = payer_inn
+            transfer.payer_account_number = payer_account_number
+            transfer.booking_date = booking_date or None
+            transfer.value_date = value_date or None
+            transfer.raw_payload = record
 
-        if match_status != IncomingBankTransfer.MatchStatus.MATCHED or matched_user is None:
+            if transfer.match_status != IncomingBankTransfer.MatchStatus.MATCHED:
+                transfer.user = connection.user if matched_fleet is not None else None
+                transfer.fleet = matched_fleet
+                transfer.match_status = match_status
+
+            transfer.save(
+                update_fields=[
+                    "user",
+                    "fleet",
+                    "provider",
+                    "account_number",
+                    "currency",
+                    "amount",
+                    "reference_text",
+                    "payer_name",
+                    "payer_inn",
+                    "payer_account_number",
+                    "booking_date",
+                    "value_date",
+                    "match_status",
+                    "raw_payload",
+                    "updated_at",
+                ]
+            )
+
+        effective_fleet = transfer.fleet or matched_fleet
+        if transfer.match_status != IncomingBankTransfer.MatchStatus.MATCHED or effective_fleet is None:
             continue
 
-        deposit, created = complete_bank_deposit(
-            user=matched_user,
+        deposit, created = complete_fleet_bank_deposit(
+            fleet=effective_fleet,
+            user=connection.user,
             provider="bog",
             provider_transaction_id=provider_transaction_id,
             amount=amount,
             currency=currency,
-            reference_code=matched_reference or build_wallet_deposit_reference(matched_user),
+            reference_code=matched_reference or build_fleet_deposit_reference(effective_fleet),
             incoming_transfer=transfer,
             raw_payload=record,
             note=reference_text,
@@ -1215,10 +1285,6 @@ def generate_simulated_events(*, connection: ProviderConnection, mode: str, coun
 
 
 def import_unprocessed_events(*, connection: ProviderConnection):
-    wallet, _ = Wallet.objects.get_or_create(user=connection.user)
-    ledger_account = get_or_create_user_ledger_account(connection.user, wallet.currency)
-    ensure_opening_entry(ledger_account, wallet.balance, created_by=connection.user)
-
     events = list(connection.events.filter(processed=False).order_by("created_at", "id"))
     imported = 0
     imported_total = Decimal("0.00")
@@ -1231,49 +1297,108 @@ def import_unprocessed_events(*, connection: ProviderConnection):
                 event.save(update_fields=["processed"])
                 continue
 
-            idempotency_key = f"yandex:{connection.id}:{event.external_id}"
-            create_ledger_entry(
-                account=ledger_account,
-                amount=net,
-                entry_type="yandex_earning",
-                created_by=connection.user,
+            driver_external_id = str(
+                event.payload.get("driver_id")
+                or event.payload.get("driver_external_id")
+                or ""
+            ).strip()
+            membership = (
+                DriverFleetMembership.objects.select_related("fleet", "user")
+                .filter(
+                    yandex_external_driver_id=driver_external_id,
+                    is_active=True,
+                    fleet__phone_bindings__user=connection.user,
+                    fleet__phone_bindings__is_active=True,
+                )
+                .order_by("id")
+                .first()
+            )
+
+            if membership is None:
+                continue
+
+            existing_entry = LedgerEntry.objects.filter(
+                account__user=membership.user,
+                account__account_type=LedgerAccount.AccountType.DRIVER_AVAILABLE,
                 reference_type="external_event",
                 reference_id=str(event.id),
-                idempotency_key=idempotency_key,
-                metadata={
-                    "description": f"Yandex import {event.external_id}",
-                    "external_event_id": event.external_id,
-                },
-            )
+            ).first()
+            if existing_entry is None:
+                record_driver_earning_allocation(
+                    user=membership.user,
+                    fleet=membership.fleet,
+                    amount=net,
+                    created_by=connection.user,
+                    currency=str(event.payload.get("currency") or "GEL"),
+                    reference_type="external_event",
+                    reference_id=str(event.id),
+                    metadata={
+                        "description": f"Yandex import {event.external_id}",
+                        "external_event_id": event.external_id,
+                        "driver_external_id": driver_external_id,
+                        "connection_id": connection.id,
+                    },
+                )
+                LedgerEntry.objects.filter(
+                    account__user=membership.user,
+                    account__account_type=LedgerAccount.AccountType.DRIVER_AVAILABLE,
+                    reference_type="external_event",
+                    reference_id=str(event.id),
+                    idempotency_key__isnull=True,
+                ).update(idempotency_key=f"yandex:{connection.id}:{event.external_id}")
+
             imported += 1
             imported_total += net
             event.processed = True
             event.save(update_fields=["processed"])
 
-        wallet.balance = wallet.balance + imported_total
-        wallet.save(update_fields=["balance", "updated_at"])
-
     return {"imported_count": imported, "imported_total": str(imported_total)}
 
 
-def reconciliation_summary(*, connection: ProviderConnection):
-    imported_events = connection.events.filter(processed=True)
-    imported_total = Decimal("0.00")
-    for event in imported_events:
-        imported_total += Decimal(str(event.payload.get("net_amount", "0")))
+def reconciliation_summary(*, connection: ProviderConnection, fleet: Fleet | None = None):
+    processed_events = connection.events.filter(processed=True)
+    if fleet is not None:
+        fleet_external_driver_ids = set(
+            DriverFleetMembership.objects.filter(
+                fleet=fleet,
+                is_active=True,
+            ).exclude(yandex_external_driver_id="").values_list("yandex_external_driver_id", flat=True)
+        )
+        imported_total = Decimal("0.00")
+        imported_events_count = 0
+        for event in processed_events:
+            if str(event.payload.get("driver_id") or "") not in fleet_external_driver_ids:
+                continue
+            imported_events_count += 1
+            imported_total += Decimal(str(event.payload.get("net_amount", "0")))
 
-    wallet, _ = Wallet.objects.get_or_create(user=connection.user)
-    ledger_account = get_or_create_user_ledger_account(connection.user, wallet.currency)
+        ledger_entries = LedgerEntry.objects.filter(
+            account__account_type=LedgerAccount.AccountType.DRIVER_AVAILABLE,
+            account__fleet=fleet,
+            reference_type="external_event",
+        )
+    else:
+        imported_total = Decimal("0.00")
+        for event in processed_events:
+            imported_total += Decimal(str(event.payload.get("net_amount", "0")))
+        imported_events_count = processed_events.count()
+        ledger_entries = LedgerEntry.objects.filter(
+            account__account_type=LedgerAccount.AccountType.DRIVER_AVAILABLE,
+            reference_type="external_event",
+            account__fleet__phone_bindings__user=connection.user,
+            account__fleet__phone_bindings__is_active=True,
+        ).distinct()
+
     yandex_ledger_total = Decimal("0.00")
-    for entry in ledger_account.entries.filter(entry_type="yandex_earning"):
+    for entry in ledger_entries:
         yandex_ledger_total += Decimal(str(entry.amount))
 
     delta = imported_total - yandex_ledger_total
     return {
-        "imported_events": imported_events.count(),
-        "imported_total": str(imported_total),
-        "ledger_total": str(yandex_ledger_total),
-        "delta": str(delta),
+        "imported_events": imported_events_count,
+        "imported_total": _format_money(imported_total),
+        "ledger_total": _format_money(yandex_ledger_total),
+        "delta": _format_money(delta),
         "status": "OK" if delta == Decimal("0.00") else "MISMATCH",
     }
 
@@ -1582,17 +1707,10 @@ def purge_simulated_yandex_data(*, connection: ProviderConnection):
             "wallet_balance": str(Wallet.objects.get_or_create(user=connection.user)[0].balance),
         }
 
-    wallet, _ = Wallet.objects.get_or_create(user=connection.user)
-    ledger_account = get_or_create_user_ledger_account(connection.user, wallet.currency)
-    ensure_opening_entry(ledger_account, wallet.balance, created_by=connection.user)
-
     with transaction.atomic():
-        locked_account = LedgerAccount.objects.select_for_update().get(id=ledger_account.id)
-        locked_wallet = Wallet.objects.select_for_update().get(id=wallet.id)
-
         ledger_entries = list(
-            locked_account.entries.filter(
-                entry_type="yandex_earning",
+            LedgerEntry.objects.select_for_update().filter(
+                account__account_type=LedgerAccount.AccountType.DRIVER_AVAILABLE,
                 reference_type="external_event",
                 reference_id__in=[str(event_id) for event_id in simulated_event_ids],
             )
@@ -1611,20 +1729,17 @@ def purge_simulated_yandex_data(*, connection: ProviderConnection):
 
         deleted_ledger_entries = len(ledger_entry_ids)
         if ledger_entry_ids:
-            locked_account.entries.filter(id__in=ledger_entry_ids).delete()
+            LedgerEntry.objects.filter(id__in=ledger_entry_ids).delete()
 
         deleted_events = len(simulated_event_ids)
         ExternalEvent.objects.filter(id__in=simulated_event_ids).delete()
-
-        locked_wallet.balance = get_account_balance(locked_account, locked_wallet.currency)
-        locked_wallet.save(update_fields=["balance", "updated_at"])
 
     return {
         "deleted_events": deleted_events,
         "deleted_transactions": deleted_transactions,
         "deleted_ledger_entries": deleted_ledger_entries,
         "removed_total": str(removed_total),
-        "wallet_balance": str(locked_wallet.balance),
+        "wallet_balance": str(Wallet.objects.get_or_create(user=connection.user)[0].balance),
         "external_ids": simulated_external_ids[:25],
     }
 
@@ -1632,9 +1747,24 @@ def purge_simulated_yandex_data(*, connection: ProviderConnection):
 def _reverse_withdrawal_to_wallet(*, withdrawal: WithdrawalRequest, reason: str, idempotency_key: str, created_by):
     with transaction.atomic():
         locked_withdrawal = WithdrawalRequest.objects.select_for_update().select_related(
-            "wallet", "wallet__user"
+            "wallet", "wallet__user", "user"
         ).get(id=withdrawal.id)
         if locked_withdrawal.status == WithdrawalRequest.Status.FAILED:
+            return locked_withdrawal
+
+        if locked_withdrawal.fleet_id:
+            reverse_driver_withdrawal_hold(
+                withdrawal=locked_withdrawal,
+                fleet=locked_withdrawal.fleet,
+                user=locked_withdrawal.user,
+                amount=locked_withdrawal.amount,
+                fee_amount=locked_withdrawal.fee_amount,
+                created_by=created_by,
+                currency=locked_withdrawal.currency,
+                reason=reason,
+            )
+            locked_withdrawal.status = WithdrawalRequest.Status.FAILED
+            locked_withdrawal.save(update_fields=["status"])
             return locked_withdrawal
 
         wallet = locked_withdrawal.wallet
@@ -1809,6 +1939,13 @@ def sync_bog_payout_status(*, payout: BogPayout):
         withdrawal = locked_payout.withdrawal
         if locked_payout.status == BogPayout.Status.SETTLED:
             if withdrawal.status != WithdrawalRequest.Status.COMPLETED:
+                if withdrawal.fleet_id:
+                    settle_driver_withdrawal(
+                        withdrawal=withdrawal,
+                        amount=withdrawal.amount,
+                        created_by=locked_payout.connection.user,
+                        currency=withdrawal.currency,
+                    )
                 withdrawal.status = WithdrawalRequest.Status.COMPLETED
                 withdrawal.save(update_fields=["status"])
         elif locked_payout.status == BogPayout.Status.FAILED:
@@ -1904,12 +2041,33 @@ def apply_bank_simulator_status_update(*, payout: BankSimulatorPayout, target_st
             return locked_payout
 
         if target_status == BankSimulatorPayout.Status.SETTLED:
+            if withdrawal.fleet_id:
+                settle_driver_withdrawal(
+                    withdrawal=withdrawal,
+                    amount=withdrawal.amount,
+                    created_by=locked_payout.connection.user,
+                    currency=withdrawal.currency,
+                )
             withdrawal.status = WithdrawalRequest.Status.COMPLETED
             withdrawal.save(update_fields=["status"])
             return locked_payout
 
         if target_status in {BankSimulatorPayout.Status.FAILED, BankSimulatorPayout.Status.REVERSED}:
             if withdrawal.status != WithdrawalRequest.Status.FAILED:
+                if withdrawal.fleet_id:
+                    reverse_driver_withdrawal_hold(
+                        withdrawal=withdrawal,
+                        fleet=withdrawal.fleet,
+                        user=withdrawal.user,
+                        amount=withdrawal.amount,
+                        fee_amount=withdrawal.fee_amount,
+                        created_by=locked_payout.connection.user,
+                        currency=withdrawal.currency,
+                        reason="Bank simulator marked payout failed/reversed",
+                    )
+                    withdrawal.status = WithdrawalRequest.Status.FAILED
+                    withdrawal.save(update_fields=["status"])
+                    return locked_payout
                 wallet = withdrawal.wallet
                 ledger_account = get_or_create_user_ledger_account(wallet.user, wallet.currency)
                 create_ledger_entry(
@@ -1934,17 +2092,22 @@ def apply_bank_simulator_status_update(*, payout: BankSimulatorPayout, target_st
         return locked_payout
 
 
-def build_reconciliation_report(*, user):
-    wallet, _ = Wallet.objects.get_or_create(user=user)
-    ledger_account = get_or_create_user_ledger_account(user, wallet.currency)
-    ensure_opening_entry(ledger_account, wallet.balance, created_by=user)
-    ledger_balance = get_account_balance(ledger_account, wallet.currency)
+def build_reconciliation_report(*, user, fleet: Fleet):
+    currency = "GEL"
+    matched_deposits = Deposit.objects.filter(fleet=fleet, status=Deposit.Status.COMPLETED)
+    matched_deposit_ids = list(matched_deposits.values_list("id", flat=True))
+    withdrawal_ids = list(
+        WithdrawalRequest.objects.filter(fleet=fleet).values_list("id", flat=True)
+    )
+
+    def _sum_ledger_entries(queryset):
+        return queryset.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
 
     yandex_connection = ProviderConnection.objects.filter(
         user=user, provider=ProviderConnection.Provider.YANDEX
     ).first()
     if yandex_connection:
-        yandex = reconciliation_summary(connection=yandex_connection)
+        yandex = reconciliation_summary(connection=yandex_connection, fleet=fleet)
         yandex_config = yandex_connection.config or {}
         yandex["last_connection_test"] = yandex_config.get("last_connection_test")
         yandex["last_live_sync"] = yandex_config.get("last_live_sync")
@@ -1957,9 +2120,9 @@ def build_reconciliation_report(*, user):
     else:
         yandex = {
             "imported_events": 0,
-            "imported_total": "0.00",
-            "ledger_total": "0.00",
-            "delta": "0.00",
+            "imported_total": _format_money("0"),
+            "ledger_total": _format_money("0"),
+            "delta": _format_money("0"),
             "status": "OK",
             "last_connection_test": None,
             "last_live_sync": None,
@@ -1971,32 +2134,66 @@ def build_reconciliation_report(*, user):
             "sync_runs_count": 0,
         }
 
-    deposits = Deposit.objects.filter(user=user)
-    deposits_total = deposits.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
-    deposits_completed = (
-        deposits.filter(status=Deposit.Status.COMPLETED).aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+    total_fleet_reserves = _sum_ledger_entries(
+        LedgerEntry.objects.filter(
+            account__account_type=LedgerAccount.AccountType.FLEET_RESERVE,
+            account__fleet=fleet,
+            currency=currency,
+        )
+    )
+    total_driver_available = _sum_ledger_entries(
+        LedgerEntry.objects.filter(
+            account__account_type=LedgerAccount.AccountType.DRIVER_AVAILABLE,
+            account__fleet=fleet,
+            currency=currency,
+        )
+    )
+    payout_clearing_balance = _sum_ledger_entries(
+        LedgerEntry.objects.filter(
+            account__account_type=LedgerAccount.AccountType.PAYOUT_CLEARING,
+            currency=currency,
+            reference_type="withdrawal",
+            reference_id__in=[str(item) for item in withdrawal_ids],
+        )
+    )
+    platform_fee_balance = _sum_ledger_entries(
+        LedgerEntry.objects.filter(
+            account__account_type=LedgerAccount.AccountType.PLATFORM_FEE,
+            currency=currency,
+            reference_type="withdrawal",
+            reference_id__in=[str(item) for item in withdrawal_ids],
+        )
     )
 
-    withdrawals = WithdrawalRequest.objects.filter(user=user)
-    withdrawals_total = withdrawals.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
-    withdrawals_completed = (
-        withdrawals.filter(status=WithdrawalRequest.Status.COMPLETED).aggregate(total=Sum("amount"))["total"]
-        or Decimal("0.00")
-    )
-    withdrawals_pending = (
-        withdrawals.filter(status__in=[WithdrawalRequest.Status.PENDING, WithdrawalRequest.Status.PROCESSING]).aggregate(
-            total=Sum("amount")
-        )["total"]
-        or Decimal("0.00")
-    )
-    withdrawals_failed = (
-        withdrawals.filter(status=WithdrawalRequest.Status.FAILED).aggregate(total=Sum("amount"))["total"]
-        or Decimal("0.00")
-    )
+    fleet_reserve_account_count = LedgerAccount.objects.filter(
+        account_type=LedgerAccount.AccountType.FLEET_RESERVE,
+        fleet=fleet,
+        currency=currency,
+    ).count()
+    driver_available_account_count = LedgerAccount.objects.filter(
+        account_type=LedgerAccount.AccountType.DRIVER_AVAILABLE,
+        fleet=fleet,
+        currency=currency,
+    ).count()
 
-    payouts = BankSimulatorPayout.objects.filter(withdrawal__user=user)
+    matched_deposits_total = matched_deposits.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+    fleet_reference_code = build_fleet_deposit_reference(fleet)
+    unmatched_deposits_count = IncomingBankTransfer.objects.filter(
+        provider=ProviderConnection.Provider.BANK_OF_GEORGIA,
+        match_status=IncomingBankTransfer.MatchStatus.UNMATCHED,
+    ).filter(
+        Q(fleet=fleet) | Q(reference_text__icontains=fleet_reference_code)
+    ).count()
+
+    pending_withdrawals = WithdrawalRequest.objects.filter(
+        fleet=fleet,
+        status__in=[WithdrawalRequest.Status.PENDING, WithdrawalRequest.Status.PROCESSING]
+    )
+    pending_withdrawals_total = pending_withdrawals.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+
+    payouts = BankSimulatorPayout.objects.filter(withdrawal__fleet=fleet)
     payouts_by_status = {
-        status_key: str(
+        status_key: _format_money(
             payouts.filter(status=status_key).aggregate(total=Sum("withdrawal__amount"))["total"] or Decimal("0.00")
         )
         for status_key in [
@@ -2007,9 +2204,9 @@ def build_reconciliation_report(*, user):
             BankSimulatorPayout.Status.REVERSED,
         ]
     }
-    bog_payouts = BogPayout.objects.filter(withdrawal__user=user)
+    bog_payouts = BogPayout.objects.filter(withdrawal__fleet=fleet)
     bog_payouts_by_status = {
-        status_key: str(
+        status_key: _format_money(
             bog_payouts.filter(status=status_key).aggregate(total=Sum("withdrawal__amount"))["total"] or Decimal("0.00")
         )
         for status_key in [
@@ -2021,29 +2218,49 @@ def build_reconciliation_report(*, user):
         ]
     }
 
-    wallet_delta = ledger_balance - wallet.balance
+    treasury_balance = _sum_ledger_entries(
+        LedgerEntry.objects.filter(
+            account__account_type=LedgerAccount.AccountType.TREASURY,
+            currency=currency,
+        ).filter(
+            Q(metadata__fleet_id=fleet.id)
+            | Q(reference_type="deposit", reference_id__in=[str(item) for item in matched_deposit_ids])
+            | Q(reference_type="withdrawal", reference_id__in=[str(item) for item in withdrawal_ids])
+        )
+    )
+    treasury_expected_total = total_fleet_reserves + payout_clearing_balance + platform_fee_balance
+    treasury_delta = treasury_balance - treasury_expected_total
 
     return {
-        "currency": wallet.currency,
-        "wallet": {
-            "wallet_balance": str(wallet.balance),
-            "ledger_balance": str(ledger_balance),
-            "delta": str(wallet_delta),
-            "status": "OK" if wallet_delta == Decimal("0.00") else "MISMATCH",
+        "currency": currency,
+        "treasury": {
+            "balance": _format_money(treasury_balance),
+            "expected_total": _format_money(treasury_expected_total),
+            "delta": _format_money(treasury_delta),
+            "status": "OK" if treasury_delta == Decimal("0.00") else "MISMATCH",
         },
-        "yandex": yandex,
-        "withdrawals": {
-            "count": withdrawals.count(),
-            "total": str(withdrawals_total),
-            "completed_total": str(withdrawals_completed),
-            "pending_total": str(withdrawals_pending),
-            "failed_total": str(withdrawals_failed),
+        "fleet_reserves": {
+            "account_count": fleet_reserve_account_count,
+            "total_balance": _format_money(total_fleet_reserves),
+        },
+        "driver_available": {
+            "account_count": driver_available_account_count,
+            "total_balance": _format_money(total_driver_available),
+        },
+        "payout_clearing": {
+            "balance": _format_money(payout_clearing_balance),
+            "pending_withdrawals_count": pending_withdrawals.count(),
+            "pending_withdrawals_total": _format_money(pending_withdrawals_total),
+        },
+        "platform_fees": {
+            "balance": _format_money(platform_fee_balance),
         },
         "deposits": {
-            "count": deposits.count(),
-            "total": str(deposits_total),
-            "completed_total": str(deposits_completed),
+            "matched_count": matched_deposits.count(),
+            "matched_total": _format_money(matched_deposits_total),
+            "unmatched_count": unmatched_deposits_count,
         },
+        "yandex": yandex,
         "bank_simulator": {
             "count": payouts.count(),
             "totals_by_status": payouts_by_status,
@@ -2054,6 +2271,6 @@ def build_reconciliation_report(*, user):
         },
         "generated_at": timezone.now().isoformat(),
         "overall_status": "OK"
-        if wallet_delta == Decimal("0.00") and yandex.get("status") == "OK"
+        if treasury_delta == Decimal("0.00") and yandex.get("status") == "OK"
         else "MISMATCH",
     }

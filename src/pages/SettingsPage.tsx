@@ -48,13 +48,50 @@ export default function SettingsPage() {
 
           <div className="txRow" role="listitem">
             <div className="txMain">
-              <div className="txTitle">Wallet vs Ledger</div>
-              <div className="txSub">Wallet {report.wallet.wallet_balance} {report.currency}</div>
-              <div className="txSub">Ledger {report.wallet.ledger_balance} {report.currency}</div>
+              <div className="txTitle">Treasury</div>
+              <div className="txSub">Balance {report.treasury.balance} {report.currency}</div>
+              <div className="txSub">Expected internal total {report.treasury.expected_total} {report.currency}</div>
             </div>
-            <div className={`txAmount ${report.wallet.status === "OK" ? "pos" : "neg"}`}>
-              {report.wallet.delta}
+            <div className={`txAmount ${report.treasury.status === "OK" ? "pos" : "neg"}`}>
+              {report.treasury.delta}
             </div>
+          </div>
+
+          <div className="txRow" role="listitem">
+            <div className="txMain">
+              <div className="txTitle">Fleet reserves</div>
+              <div className="txSub">Total {report.fleet_reserves.total_balance} {report.currency}</div>
+              <div className="txSub">Accounts {report.fleet_reserves.account_count}</div>
+            </div>
+            <div className="txAmount pos">{report.fleet_reserves.account_count}</div>
+          </div>
+
+          <div className="txRow" role="listitem">
+            <div className="txMain">
+              <div className="txTitle">Driver available balances</div>
+              <div className="txSub">Total {report.driver_available.total_balance} {report.currency}</div>
+              <div className="txSub">Accounts {report.driver_available.account_count}</div>
+            </div>
+            <div className="txAmount pos">{report.driver_available.account_count}</div>
+          </div>
+
+          <div className="txRow" role="listitem">
+            <div className="txMain">
+              <div className="txTitle">Pending payouts / clearing</div>
+              <div className="txSub">Clearing {report.payout_clearing.balance} {report.currency}</div>
+              <div className="txSub">
+                Pending withdrawals {report.payout_clearing.pending_withdrawals_total} {report.currency}
+              </div>
+            </div>
+            <div className="txAmount pos">{report.payout_clearing.pending_withdrawals_count}</div>
+          </div>
+
+          <div className="txRow" role="listitem">
+            <div className="txMain">
+              <div className="txTitle">Platform fees</div>
+              <div className="txSub">Collected {report.platform_fees.balance} {report.currency}</div>
+            </div>
+            <div className="txAmount pos">{report.platform_fees.balance}</div>
           </div>
 
           <div className="txRow" role="listitem">
@@ -119,21 +156,10 @@ export default function SettingsPage() {
           <div className="txRow" role="listitem">
             <div className="txMain">
               <div className="txTitle">Deposits</div>
-              <div className="txSub">Total {report.deposits.total}</div>
-              <div className="txSub">Completed {report.deposits.completed_total}</div>
+              <div className="txSub">Matched {report.deposits.matched_total} {report.currency}</div>
+              <div className="txSub">Unmatched transfers {report.deposits.unmatched_count}</div>
             </div>
-            <div className="txAmount pos">{report.deposits.count}</div>
-          </div>
-
-          <div className="txRow" role="listitem">
-            <div className="txMain">
-              <div className="txTitle">Withdrawals</div>
-              <div className="txSub">Total {report.withdrawals.total}</div>
-              <div className="txSub">Completed {report.withdrawals.completed_total}</div>
-              <div className="txSub">Pending {report.withdrawals.pending_total}</div>
-              <div className="txSub">Failed {report.withdrawals.failed_total}</div>
-            </div>
-            <div className="txAmount pos">{report.withdrawals.count}</div>
+            <div className="txAmount pos">{report.deposits.matched_count}</div>
           </div>
 
           <div className="txRow" role="listitem">

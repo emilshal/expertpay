@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from corsheaders.defaults import default_headers
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -18,10 +19,17 @@ load_dotenv(BASE_DIR / ".env")
 # See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-secret-key-change-me")
+DEFAULT_DEV_SECRET_KEY = "dev-secret-key-change-me-before-production-please-use-a-long-random-value"
+SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", DEFAULT_DEV_SECRET_KEY)
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv("DJANGO_DEBUG", "true").lower() == "true"
+
+if not DEBUG:
+    if SECRET_KEY == DEFAULT_DEV_SECRET_KEY:
+        raise ImproperlyConfigured("DJANGO_SECRET_KEY must be set explicitly when DJANGO_DEBUG=false.")
+    if len(SECRET_KEY) < 32:
+        raise ImproperlyConfigured("DJANGO_SECRET_KEY must be at least 32 characters when DJANGO_DEBUG=false.")
 
 ALLOWED_HOSTS = os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
 

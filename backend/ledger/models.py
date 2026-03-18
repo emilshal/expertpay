@@ -1,15 +1,24 @@
 from django.conf import settings
 from django.db import models
+from django.db.models import Q
+
+from accounts.models import Fleet
 
 
 class LedgerAccount(models.Model):
     class AccountType(models.TextChoices):
         USER_WALLET = "user_wallet", "User Wallet"
+        DRIVER_AVAILABLE = "driver_available", "Driver Available"
+        FLEET_RESERVE = "fleet_reserve", "Fleet Reserve"
+        TREASURY = "treasury", "Treasury"
+        PLATFORM_FEE = "platform_fee", "Platform Fee"
+        PAYOUT_CLEARING = "payout_clearing", "Payout Clearing"
         SYSTEM = "system", "System"
 
-    user = models.OneToOneField(
-        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="ledger_account", null=True, blank=True
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="ledger_accounts", null=True, blank=True
     )
+    fleet = models.ForeignKey(Fleet, on_delete=models.CASCADE, related_name="ledger_accounts", null=True, blank=True)
     account_type = models.CharField(max_length=20, choices=AccountType.choices, default=AccountType.USER_WALLET)
     name = models.CharField(max_length=64, default="main")
     currency = models.CharField(max_length=3, default="GEL")
@@ -19,9 +28,26 @@ class LedgerAccount(models.Model):
 
     class Meta:
         ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "account_type", "currency"],
+                condition=Q(user__isnull=False),
+                name="ledger_unique_user_type_currency",
+            ),
+            models.UniqueConstraint(
+                fields=["fleet", "account_type", "currency"],
+                condition=Q(fleet__isnull=False, user__isnull=True),
+                name="ledger_unique_fleet_type_currency",
+            ),
+        ]
 
     def __str__(self):
-        owner = self.user.username if self.user else "system"
+        if self.user:
+            owner = self.user.username
+        elif self.fleet:
+            owner = f"fleet:{self.fleet.name}"
+        else:
+            owner = "system"
         return f"{owner}:{self.name}:{self.currency}"
 
 

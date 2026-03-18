@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from .roles import get_request_fleet_binding
 from .models import Fleet, FleetPhoneBinding, LoginCodeChallenge
 from .serializers import (
     FleetMemberRoleUpdateSerializer,
@@ -31,7 +32,15 @@ class MeView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        return Response(UserSerializer(request.user).data)
+        payload = UserSerializer(request.user).data
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if binding is not None:
+            payload["fleet"] = {"id": binding.fleet.id, "name": binding.fleet.name}
+            payload["role"] = binding.role
+        else:
+            payload["fleet"] = None
+            payload["role"] = None
+        return Response(payload)
 
 
 class FleetListView(generics.ListAPIView):

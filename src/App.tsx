@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import AppShell from "./components/AppShell";
-import DashboardPage from "./pages/DashboardPage";
+import DriverDashboardPage from "./pages/DriverDashboardPage";
+import OwnerDashboardPage from "./pages/OwnerDashboardPage";
 import CardTopupPage from "./pages/CardTopupPage";
 import DepositsPage from "./pages/DepositsPage";
 import DepositReviewPage from "./pages/DepositReviewPage";
@@ -11,11 +12,12 @@ import ConnectYandexPage from "./pages/ConnectYandexPage";
 import YandexOpsPage from "./pages/YandexOpsPage";
 import FleetMembersPage from "./pages/FleetMembersPage";
 import LoginPage from "./pages/LoginPage";
-import { clearTokens, getAccessToken, me } from "./lib/api";
+import { clearTokens, getAccessToken, getActiveRole, me } from "./lib/api";
 
 export default function App() {
   const [isChecking, setIsChecking] = useState(true);
   const [isAuthed, setAuthed] = useState(false);
+  const [role, setRole] = useState<"driver" | "operator" | "admin" | "owner" | null>(getActiveRole());
 
   async function refreshSession() {
     const token = getAccessToken();
@@ -26,10 +28,12 @@ export default function App() {
     }
 
     try {
-      await me();
+      const profile = await me();
+      setRole(profile.role);
       setAuthed(true);
     } catch {
       clearTokens();
+      setRole(null);
       setAuthed(false);
     } finally {
       setIsChecking(false);
@@ -61,20 +65,32 @@ export default function App() {
     );
   }
 
+  const isDriver = role === "driver";
+  const isOwnerAdmin = role === "owner" || role === "admin";
+
   return (
     <AppShell>
       <Routes>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
-        <Route path="/dashboard" element={<DashboardPage />} />
-        <Route path="/card-topup" element={<CardTopupPage />} />
-        <Route path="/deposits" element={<DepositsPage />} />
-        <Route path="/deposit-review" element={<DepositReviewPage />} />
-        <Route path="/payouts" element={<PayoutsPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
-        <Route path="/fleet-members" element={<FleetMembersPage />} />
-        <Route path="/connect-yandex" element={<ConnectYandexPage />} />
-        <Route path="/yandex-ops" element={<YandexOpsPage />} />
-        <Route path="/yandex-data" element={<YandexOpsPage />} />
+        <Route path="/dashboard" element={isDriver ? <DriverDashboardPage /> : <OwnerDashboardPage />} />
+        <Route path="/card-topup" element={isDriver ? <Navigate to="/dashboard" replace /> : <CardTopupPage />} />
+        <Route path="/deposits" element={isDriver ? <Navigate to="/dashboard" replace /> : <DepositsPage />} />
+        <Route
+          path="/deposit-review"
+          element={isOwnerAdmin ? <DepositReviewPage /> : <Navigate to="/dashboard" replace />}
+        />
+        <Route path="/payouts" element={isDriver ? <Navigate to="/dashboard" replace /> : <PayoutsPage />} />
+        <Route path="/settings" element={isOwnerAdmin ? <SettingsPage /> : <Navigate to="/dashboard" replace />} />
+        <Route
+          path="/fleet-members"
+          element={isOwnerAdmin ? <FleetMembersPage /> : <Navigate to="/dashboard" replace />}
+        />
+        <Route
+          path="/connect-yandex"
+          element={isOwnerAdmin ? <ConnectYandexPage /> : <Navigate to="/dashboard" replace />}
+        />
+        <Route path="/yandex-ops" element={isOwnerAdmin ? <YandexOpsPage /> : <Navigate to="/dashboard" replace />} />
+        <Route path="/yandex-data" element={isOwnerAdmin ? <YandexOpsPage /> : <Navigate to="/dashboard" replace />} />
         <Route path="/login" element={<Navigate to="/dashboard" replace />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>

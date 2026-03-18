@@ -33,11 +33,38 @@ class DepositInstructionSerializer(serializers.Serializer):
     account_holder_name = serializers.CharField(allow_blank=True)
     account_number = serializers.CharField()
     currency = serializers.CharField()
+    fleet_name = serializers.CharField()
     reference_code = serializers.CharField()
     note = serializers.CharField()
 
 
+class OwnerPendingPayoutSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    driver_name = serializers.CharField()
+    driver_username = serializers.CharField()
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    fee_amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    currency = serializers.CharField(max_length=3)
+    status = serializers.CharField()
+    created_at = serializers.DateTimeField()
+
+
+class OwnerFleetSummarySerializer(serializers.Serializer):
+    fleet_name = serializers.CharField()
+    currency = serializers.CharField(max_length=3)
+    reserve_balance = serializers.DecimalField(max_digits=14, decimal_places=2)
+    total_funded = serializers.DecimalField(max_digits=14, decimal_places=2)
+    total_withdrawn = serializers.DecimalField(max_digits=14, decimal_places=2)
+    total_fees = serializers.DecimalField(max_digits=14, decimal_places=2)
+    pending_payouts_count = serializers.IntegerField()
+    pending_payouts_total = serializers.DecimalField(max_digits=14, decimal_places=2)
+    active_drivers_count = serializers.IntegerField()
+    pending_payouts = OwnerPendingPayoutSerializer(many=True)
+
+
 class DepositSerializer(serializers.ModelSerializer):
+    fleet_name = serializers.CharField(source="fleet.name", read_only=True)
+
     class Meta:
         model = Deposit
         fields = (
@@ -45,6 +72,7 @@ class DepositSerializer(serializers.ModelSerializer):
             "amount",
             "currency",
             "status",
+            "fleet_name",
             "reference_code",
             "provider",
             "provider_transaction_id",
@@ -58,6 +86,8 @@ class DepositSerializer(serializers.ModelSerializer):
 
 
 class IncomingBankTransferSerializer(serializers.ModelSerializer):
+    fleet_name = serializers.CharField(source="fleet.name", read_only=True)
+
     class Meta:
         model = IncomingBankTransfer
         fields = (
@@ -67,6 +97,7 @@ class IncomingBankTransferSerializer(serializers.ModelSerializer):
             "account_number",
             "currency",
             "amount",
+            "fleet_name",
             "reference_text",
             "payer_name",
             "payer_inn",
@@ -80,7 +111,8 @@ class IncomingBankTransferSerializer(serializers.ModelSerializer):
 
 
 class IncomingBankTransferMatchSerializer(serializers.Serializer):
-    phone_number = serializers.CharField(max_length=32)
+    fleet_name = serializers.CharField(max_length=120, required=False, allow_blank=True)
+    phone_number = serializers.CharField(max_length=32, required=False, allow_blank=True)
 
 
 class WithdrawalCreateSerializer(serializers.Serializer):
@@ -91,10 +123,11 @@ class WithdrawalCreateSerializer(serializers.Serializer):
 
 class WithdrawalSerializer(serializers.ModelSerializer):
     bank_account = BankAccountSerializer(read_only=True)
+    fleet_name = serializers.CharField(source="fleet.name", read_only=True)
 
     class Meta:
         model = WithdrawalRequest
-        fields = ("id", "amount", "currency", "status", "note", "bank_account", "created_at")
+        fields = ("id", "amount", "fee_amount", "currency", "status", "note", "fleet_name", "bank_account", "created_at")
 
 
 class WithdrawalStatusUpdateSerializer(serializers.Serializer):

@@ -717,4 +717,10 @@ class ReconciliationSummaryView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        return Response(build_reconciliation_report(user=request.user), status=status.HTTP_200_OK)
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.ADMIN):
+            return Response({"detail": "Only admin/owner can view reconciliation."}, status=403)
+        return Response(
+            build_reconciliation_report(user=request.user, fleet=binding.fleet),
+            status=status.HTTP_200_OK,
+        )

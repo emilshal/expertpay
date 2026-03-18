@@ -5,7 +5,7 @@ from rest_framework.test import APIRequestFactory
 from rest_framework.test import APITestCase
 
 from accounts.models import Fleet, FleetPhoneBinding
-from accounts.roles import get_request_fleet_binding
+from accounts.roles import get_request_fleet_binding, meets_min_role
 
 
 class FleetRoleManagementTests(APITestCase):
@@ -121,3 +121,8 @@ class FleetRoleManagementTests(APITestCase):
         binding = get_request_fleet_binding(user=self.admin, request=request)
         self.assertIsNotNone(binding)
         self.assertEqual(binding.role, FleetPhoneBinding.Role.ADMIN)
+
+    def test_meets_min_role_fails_closed_without_binding(self):
+        self.assertFalse(
+            meets_min_role(binding=None, minimum_role=FleetPhoneBinding.Role.DRIVER)
+        )

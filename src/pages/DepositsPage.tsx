@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import {
   depositInstructions,
   depositsList,
+  getActiveRole,
   syncDeposits,
   type DepositInstruction,
   type DepositItem
@@ -10,6 +11,8 @@ import {
 
 export default function DepositsPage() {
   const navigate = useNavigate();
+  const role = getActiveRole();
+  const isOwnerAdmin = role === "owner" || role === "admin";
   const [instructions, setInstructions] = useState<DepositInstruction | null>(null);
   const [deposits, setDeposits] = useState<DepositItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -67,9 +70,11 @@ export default function DepositsPage() {
           <button className="btn btnGhost" type="button" onClick={() => navigate("/card-topup")}>
             Card top-up
           </button>
-          <button className="btn btnGhost" type="button" onClick={() => navigate("/deposit-review")}>
-            Review Queue
-          </button>
+          {isOwnerAdmin ? (
+            <button className="btn btnGhost" type="button" onClick={() => navigate("/deposit-review")}>
+              Review Queue
+            </button>
+          ) : null}
           <button className="btn btnGhost" type="button" onClick={() => void runSync()}>
             {loading ? "Syncing..." : "Sync from BoG"}
           </button>

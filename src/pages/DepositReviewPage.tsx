@@ -1,23 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   fleets,
-  fleetMembers,
   getActiveFleetName,
   manualMatchIncomingTransfer,
   setActiveFleetName,
   syncDeposits,
   unmatchedIncomingTransfers,
   type Fleet,
-  type FleetMember,
   type IncomingBankTransferItem
 } from "../lib/api";
 
 export default function DepositReviewPage() {
   const [fleetList, setFleetList] = useState<Fleet[]>([]);
   const [selectedFleet, setSelectedFleet] = useState(getActiveFleetName() ?? "");
-  const [members, setMembers] = useState<FleetMember[]>([]);
   const [transfers, setTransfers] = useState<IncomingBankTransferItem[]>([]);
-  const [draftMatches, setDraftMatches] = useState<Record<number, string>>({});
   const [loading, setLoading] = useState(false);
   const [savingTransferId, setSavingTransferId] = useState<number | null>(null);
   const [error, setError] = useState("");
@@ -39,11 +35,7 @@ export default function DepositReviewPage() {
     setLoading(true);
     setError("");
     try {
-      const [memberData, transferData] = await Promise.all([
-        fleetMembers(selectedFleet),
-        unmatchedIncomingTransfers()
-      ]);
-      setMembers(memberData);
+      const transferData = await unmatchedIncomingTransfers();
       setTransfers(transferData);
     } catch (err) {
       const text = err instanceof Error ? err.message : "";
@@ -52,7 +44,6 @@ export default function DepositReviewPage() {
       } else {
         setError("Unable to load unmatched bank transfers right now.");
       }
-      setMembers([]);
       setTransfers([]);
     } finally {
       setLoading(false);
@@ -88,29 +79,19 @@ export default function DepositReviewPage() {
   }
 
   async function matchTransfer(transfer: IncomingBankTransferItem) {
-    const phoneNumber = draftMatches[transfer.id];
-    if (!phoneNumber) return;
-
     setSavingTransferId(transfer.id);
     setError("");
     setMessage("");
     try {
       await manualMatchIncomingTransfer({
         transfer_id: transfer.id,
-        phone_number: phoneNumber
+        fleet_name: selectedFleet
       });
-      setMessage(`Matched ${transfer.amount} ${transfer.currency} to ${phoneNumber}.`);
-      setDraftMatches((prev) => {
-        const next = { ...prev };
-        delete next[transfer.id];
-        return next;
-      });
+      setMessage(`Matched ${transfer.amount} ${transfer.currency} to ${selectedFleet}.`);
       await loadQueue();
     } catch (err) {
       const text = err instanceof Error ? err.message : "";
-      if (text.includes("Phone number was not found")) {
-        setError("That phone number is not in the selected fleet.");
-      } else if (text.includes("already finalized")) {
+      if (text.includes("already finalized")) {
         setError("That transfer was already handled.");
       } else {
         setError("Could not match this transfer.");
@@ -186,33 +167,11 @@ export default function DepositReviewPage() {
               </div>
 
               <div className="reviewMatchControls">
-                <span className="transferSelectWrap reviewMatchSelect">
-                  <select
-                    className="transferInput"
-                    value={draftMatches[transfer.id] ?? ""}
-                    onChange={(event) =>
-                      setDraftMatches((prev) => ({
-                        ...prev,
-                        [transfer.id]: event.target.value
-                      }))
-                    }
-                  >
-                    <option value="">Choose fleet member</option>
-                    {members.map((member) => (
-                      <option key={member.id} value={member.phone_number}>
-                        {(member.first_name || member.last_name
-                          ? `${member.first_name} ${member.last_name}`.trim()
-                          : member.username) + ` • ${member.phone_number}`}
-                      </option>
-                    ))}
-                  </select>
-                </span>
-
                 <button
                   className="btn btnPrimary"
                   type="button"
                   onClick={() => void matchTransfer(transfer)}
-                  disabled={savingTransferId === transfer.id || !draftMatches[transfer.id]}
+                  disabled={savingTransferId === transfer.id || !selectedFleet}
                 >
                   {savingTransferId === transfer.id ? "Matching..." : "Match Deposit"}
                 </button>

@@ -1,17 +1,24 @@
 import { PropsWithChildren, useEffect, useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
-import { clearTokens, getActiveFleetName } from "../lib/api";
+import { clearTokens, getActiveFleetName, getActiveRole } from "../lib/api";
 
-const MENU_ITEMS = [
+const OWNER_MENU_ITEMS = [
   { to: "/dashboard", label: "Dashboard" },
   { to: "/deposits", label: "Deposits" },
   { to: "/card-topup", label: "Card Top-Up" },
-  { to: "/deposit-review", label: "Deposit Review" },
-  { to: "/connect-yandex", label: "Yandex Overview" },
-  { to: "/yandex-data", label: "Yandex Data" },
-  { to: "/settings", label: "Reconciliation" },
-  { to: "/fleet-members", label: "Team Access" },
   { to: "/payouts", label: "Payouts" }
+];
+
+const ADMIN_OWNER_MENU_ITEMS = [
+  { to: "/deposit-review", label: "Deposit Review" },
+  { to: "/fleet-members", label: "Team Access" },
+  { to: "/settings", label: "Reconciliation" },
+  { to: "/connect-yandex", label: "Yandex Ops" },
+  { to: "/yandex-data", label: "Yandex Data" }
+];
+
+const DRIVER_MENU_ITEMS = [
+  { to: "/dashboard", label: "My Wallet" }
 ];
 
 export default function AppShell({ children }: PropsWithChildren) {
@@ -19,6 +26,14 @@ export default function AppShell({ children }: PropsWithChildren) {
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
   const fleetName = getActiveFleetName();
+  const role = getActiveRole();
+  const isDriver = role === "driver";
+  const isOwnerAdmin = role === "owner" || role === "admin";
+  const menuItems = isDriver
+    ? DRIVER_MENU_ITEMS
+    : isOwnerAdmin
+      ? [...OWNER_MENU_ITEMS, ...ADMIN_OWNER_MENU_ITEMS]
+      : OWNER_MENU_ITEMS;
 
   useEffect(() => {
     setMenuOpen(false);
@@ -69,7 +84,9 @@ export default function AppShell({ children }: PropsWithChildren) {
         <div className="sideMenuHeader">
           <div>
             <div className="sideMenuTitle">Menu</div>
-            <div className="sideMenuSub">Data, payouts, and account pages</div>
+            <div className="sideMenuSub">
+              {isDriver ? "Your payouts and bank details" : "Fleet funding, payouts, and support tools"}
+            </div>
           </div>
           <button className="sideMenuClose" type="button" aria-label="Close menu" onClick={() => setMenuOpen(false)}>
             ×
@@ -77,7 +94,7 @@ export default function AppShell({ children }: PropsWithChildren) {
         </div>
 
         <nav className="sideMenuNav" aria-label="Main navigation">
-          {MENU_ITEMS.map((item) => (
+          {menuItems.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}

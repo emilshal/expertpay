@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from rest_framework import serializers
 
 from .models import (
@@ -114,7 +116,7 @@ class SubmitBankPayoutSerializer(serializers.Serializer):
 
 
 class CreateBogCardOrderSerializer(serializers.Serializer):
-    amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=0.50)
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0.50"))
     currency = serializers.CharField(max_length=8, default="GEL")
     save_card = serializers.BooleanField(default=False)
     parent_order_id = serializers.CharField(required=False, allow_blank=True, max_length=120)

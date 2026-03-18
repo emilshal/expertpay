@@ -1,6 +1,8 @@
 from django.conf import settings
 from django.db import models
 
+from accounts.models import Fleet
+
 
 class Wallet(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="wallet")
@@ -64,8 +66,16 @@ class WithdrawalRequest(models.Model):
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="withdrawals")
     wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="withdrawals")
+    fleet = models.ForeignKey(
+        Fleet,
+        on_delete=models.SET_NULL,
+        related_name="withdrawals",
+        null=True,
+        blank=True,
+    )
     bank_account = models.ForeignKey(BankAccount, on_delete=models.PROTECT, related_name="withdrawals")
     amount = models.DecimalField(max_digits=14, decimal_places=2)
+    fee_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     currency = models.CharField(max_length=3, default="GEL")
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
     note = models.CharField(max_length=255, blank=True)
@@ -86,6 +96,13 @@ class IncomingBankTransfer(models.Model):
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="incoming_bank_transfers",
+        null=True,
+        blank=True,
+    )
+    fleet = models.ForeignKey(
+        Fleet,
         on_delete=models.SET_NULL,
         related_name="incoming_bank_transfers",
         null=True,
@@ -119,8 +136,27 @@ class Deposit(models.Model):
         COMPLETED = "completed", "Completed"
         FAILED = "failed", "Failed"
 
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="deposits")
-    wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="deposits")
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="deposits",
+        null=True,
+        blank=True,
+    )
+    wallet = models.ForeignKey(
+        Wallet,
+        on_delete=models.SET_NULL,
+        related_name="deposits",
+        null=True,
+        blank=True,
+    )
+    fleet = models.ForeignKey(
+        Fleet,
+        on_delete=models.SET_NULL,
+        related_name="deposits",
+        null=True,
+        blank=True,
+    )
     incoming_transfer = models.OneToOneField(
         IncomingBankTransfer,
         on_delete=models.SET_NULL,
@@ -146,4 +182,5 @@ class Deposit(models.Model):
         ordering = ["-created_at"]
 
     def __str__(self):
-        return f"Deposit<{self.user_id}> {self.amount} {self.currency} ({self.status})"
+        subject = f"fleet={self.fleet_id}" if self.fleet_id else f"user={self.user_id}"
+        return f"Deposit<{subject}> {self.amount} {self.currency} ({self.status})"

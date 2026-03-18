@@ -51,3 +51,18 @@ class LoginCodeChallenge(models.Model):
 
     def is_valid(self):
         return (not self.is_consumed) and self.expires_at > timezone.now()
+
+
+class DriverFleetMembership(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="driver_fleet_membership")
+    fleet = models.ForeignKey(Fleet, on_delete=models.CASCADE, related_name="driver_memberships")
+    yandex_external_driver_id = models.CharField(max_length=120, blank=True, null=True, unique=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["fleet__name", "user__username"]
+
+    def __str__(self):
+        return f"{self.user.username}:{self.fleet.name}"

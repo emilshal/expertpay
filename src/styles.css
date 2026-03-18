@@ -531,6 +531,165 @@ body::after {
   gap: 16px;
 }
 
+.driverDashboard {
+  display: grid;
+  gap: 14px;
+}
+
+.ownerDashboard {
+  display: grid;
+  gap: 14px;
+}
+
+.driverHero {
+  padding: 24px 20px;
+  background:
+    radial-gradient(140% 160% at 0% 0%, rgba(242, 180, 74, 0.22), transparent 55%),
+    linear-gradient(180deg, rgba(62, 44, 15, 0.96), rgba(26, 18, 7, 0.98));
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(244, 204, 117, 0.12);
+}
+
+.driverHeroEyebrow {
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(246, 223, 172, 0.78);
+}
+
+.driverHeroBalance {
+  margin-top: 10px;
+  font-size: 36px;
+  font-weight: 800;
+  line-height: 1;
+  color: rgba(255, 245, 220, 0.98);
+}
+
+.driverHeroNote {
+  margin: 10px 0 0;
+  max-width: 28rem;
+  color: rgba(244, 232, 206, 0.78);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.ownerHero {
+  padding: 24px 20px;
+  background:
+    radial-gradient(140% 170% at 0% 0%, rgba(95, 209, 255, 0.22), transparent 55%),
+    linear-gradient(180deg, rgba(15, 49, 66, 0.96), rgba(7, 20, 31, 0.98));
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.42), inset 0 0 0 1px rgba(151, 220, 247, 0.12);
+}
+
+.ownerHeroEyebrow {
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(185, 232, 248, 0.78);
+}
+
+.ownerHeroBalance {
+  margin-top: 10px;
+  font-size: 36px;
+  font-weight: 800;
+  line-height: 1;
+  color: rgba(234, 248, 255, 0.98);
+}
+
+.ownerHeroNote {
+  margin: 10px 0 0;
+  max-width: 34rem;
+  color: rgba(218, 239, 247, 0.8);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.ownerHeroMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+  color: rgba(200, 235, 245, 0.78);
+  font-size: 12px;
+}
+
+.driverBankSummary {
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+  border-radius: 14px;
+  background: rgba(10, 15, 29, 0.35);
+}
+
+.ownerStatsGrid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.ownerStatCard {
+  display: grid;
+  gap: 6px;
+}
+
+.ownerStatLabel {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-2);
+}
+
+.ownerStatValue {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-0);
+}
+
+.ownerStatSub {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.ownerPayoutStatus {
+  margin-top: 6px;
+  display: inline-flex;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(226, 234, 244, 0.88);
+}
+
+.ownerPayoutStatuspending {
+  background: rgba(243, 188, 67, 0.14);
+  color: #f0cb79;
+}
+
+.ownerPayoutStatusprocessing {
+  background: rgba(110, 182, 255, 0.14);
+  color: #92c8ff;
+}
+
+.ownerQuickLinks {
+  display: grid;
+  gap: 12px;
+}
+
+.ownerLinkCard {
+  display: grid;
+  gap: 6px;
+  text-decoration: none;
+  color: inherit;
+}
+
+.ownerLinkEyebrow {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
 .dashboardQuickRow {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -654,6 +813,16 @@ body::after {
 
 .txAmount.neg {
   color: #ff8a8a;
+}
+
+@media (min-width: 760px) {
+  .ownerQuickLinks {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ownerStatsGrid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
 }
 
 .bonusOverlay {

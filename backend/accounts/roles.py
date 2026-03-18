@@ -23,7 +23,6 @@ def get_request_fleet_binding(*, user, request):
     if fleet_name:
         bindings = bindings.filter(fleet__name__iexact=fleet_name)
 
-    # Compatibility mode: if user has no fleet binding yet, we do not hard-block.
     if not bindings.exists():
         return None
 
@@ -44,5 +43,5 @@ def get_request_fleet_binding(*, user, request):
 
 def meets_min_role(*, binding, minimum_role):
     if binding is None:
-        return True
+        return False
     return ROLE_RANK.get(binding.role, 0) >= ROLE_RANK.get(minimum_role, 999)

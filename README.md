@@ -49,6 +49,8 @@ This uses PostgreSQL on `localhost:5433` with:
 - User: `expertpay`
 - Password: `expertpay`
 
+`DJANGO_SECRET_KEY` should be a long random value. In local dev, the example file uses a long placeholder to avoid weak-key JWT warnings. When `DJANGO_DEBUG=false`, the backend now refuses to start if `DJANGO_SECRET_KEY` is missing, left on the default placeholder, or shorter than 32 characters.
+
 ### API Endpoints
 - `POST /api/auth/register/`
 - `POST /api/auth/login/`

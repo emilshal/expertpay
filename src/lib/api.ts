@@ -3,6 +3,7 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 const ACCESS_TOKEN_KEY = "expertpay_access_token";
 const REFRESH_TOKEN_KEY = "expertpay_refresh_token";
 const ACTIVE_FLEET_NAME_KEY = "expertpay_active_fleet_name";
+const ACTIVE_ROLE_KEY = "expertpay_active_role";
 
 type Json = Record<string, unknown>;
 
@@ -31,6 +32,14 @@ export function getActiveFleetName() {
   return localStorage.getItem(ACTIVE_FLEET_NAME_KEY);
 }
 
+export function setActiveRole(role: "driver" | "operator" | "admin" | "owner") {
+  localStorage.setItem(ACTIVE_ROLE_KEY, role);
+}
+
+export function getActiveRole() {
+  return localStorage.getItem(ACTIVE_ROLE_KEY) as "driver" | "operator" | "admin" | "owner" | null;
+}
+
 export function setAuthTokens(access: string, refresh: string) {
   setTokens(access, refresh);
 }
@@ -39,6 +48,7 @@ export function clearTokens() {
   localStorage.removeItem(ACCESS_TOKEN_KEY);
   localStorage.removeItem(REFRESH_TOKEN_KEY);
   localStorage.removeItem(ACTIVE_FLEET_NAME_KEY);
+  localStorage.removeItem(ACTIVE_ROLE_KEY);
 }
 
 async function refreshAccessToken() {
@@ -105,6 +115,8 @@ export type MeResponse = {
   first_name: string;
   last_name: string;
   email: string;
+  fleet: Fleet | null;
+  role: "driver" | "operator" | "admin" | "owner" | null;
 };
 
 export type Fleet = {
@@ -135,6 +147,7 @@ export type DepositInstruction = {
   account_holder_name: string;
   account_number: string;
   currency: string;
+  fleet_name: string;
   reference_code: string;
   note: string;
 };
@@ -144,6 +157,7 @@ export type DepositItem = {
   amount: string;
   currency: string;
   status: "completed" | "failed";
+  fleet_name?: string;
   reference_code: string;
   provider: string;
   provider_transaction_id: string;
@@ -162,6 +176,7 @@ export type IncomingBankTransferItem = {
   account_number: string;
   currency: string;
   amount: string;
+  fleet_name?: string;
   reference_text: string;
   payer_name: string;
   payer_inn: string;
@@ -196,11 +211,37 @@ export type BankAccount = {
 export type WithdrawalItem = {
   id: number;
   amount: string;
+  fee_amount: string;
   currency: string;
   status: "pending" | "processing" | "completed" | "failed";
   note: string;
+  fleet_name?: string;
   bank_account: BankAccount;
   created_at: string;
+};
+
+export type OwnerPendingPayout = {
+  id: number;
+  driver_name: string;
+  driver_username: string;
+  amount: string;
+  fee_amount: string;
+  currency: string;
+  status: "pending" | "processing" | "completed" | "failed";
+  created_at: string;
+};
+
+export type OwnerFleetSummary = {
+  fleet_name: string;
+  currency: string;
+  reserve_balance: string;
+  total_funded: string;
+  total_withdrawn: string;
+  total_fees: string;
+  pending_payouts_count: number;
+  pending_payouts_total: string;
+  active_drivers_count: number;
+  pending_payouts: OwnerPendingPayout[];
 };
 
 export type YandexConnection = {
@@ -396,11 +437,27 @@ export type BogCardOrder = {
 
 export type ReconciliationSummary = {
   currency: string;
-  wallet: {
-    wallet_balance: string;
-    ledger_balance: string;
+  treasury: {
+    balance: string;
+    expected_total: string;
     delta: string;
     status: "OK" | "MISMATCH";
+  };
+  fleet_reserves: {
+    account_count: number;
+    total_balance: string;
+  };
+  driver_available: {
+    account_count: number;
+    total_balance: string;
+  };
+  payout_clearing: {
+    balance: string;
+    pending_withdrawals_count: number;
+    pending_withdrawals_total: string;
+  };
+  platform_fees: {
+    balance: string;
   };
   yandex: {
     imported_events: number;
@@ -443,17 +500,10 @@ export type ReconciliationSummary = {
     stored_categories?: number;
     sync_runs_count?: number;
   };
-  withdrawals: {
-    count: number;
-    total: string;
-    completed_total: string;
-    pending_total: string;
-    failed_total: string;
-  };
   deposits: {
-    count: number;
-    total: string;
-    completed_total: string;
+    matched_count: number;
+    matched_total: string;
+    unmatched_count: number;
   };
   bank_simulator: {
     count: number;
@@ -498,7 +548,10 @@ export async function login(username: string, password: string) {
 }
 
 export async function me() {
-  return request<MeResponse>("/api/auth/me/");
+  const payload = await request<MeResponse>("/api/auth/me/");
+  if (payload.fleet?.name) setActiveFleetName(payload.fleet.name);
+  if (payload.role) setActiveRole(payload.role);
+  return payload;
 }
 
 export async function fleets() {
@@ -527,6 +580,7 @@ export async function verifyFleetCode(input: { challenge_id: number; code: strin
   );
   setTokens(payload.access, payload.refresh);
   if (payload.fleet?.name) setActiveFleetName(payload.fleet.name);
+  if (payload.role) setActiveRole(payload.role as "driver" | "operator" | "admin" | "owner");
   return payload;
 }
 
@@ -548,6 +602,10 @@ export async function updateFleetMemberRole(input: {
 
 export async function walletBalance() {
   return request<WalletBalance>("/api/wallet/balance/");
+}
+
+export async function ownerFleetSummary() {
+  return request<OwnerFleetSummary>("/api/wallet/owner-summary/");
 }
 
 export async function depositInstructions() {
@@ -585,13 +643,13 @@ export async function unmatchedIncomingTransfers() {
 
 export async function manualMatchIncomingTransfer(input: {
   transfer_id: number;
-  phone_number: string;
+  fleet_name?: string;
 }) {
   return request<{ transfer: IncomingBankTransferItem; deposit: DepositItem }>(
     `/api/wallet/incoming-transfers/${input.transfer_id}/match/`,
     {
       method: "POST",
-      body: JSON.stringify({ phone_number: input.phone_number }),
+      body: JSON.stringify({ fleet_name: input.fleet_name }),
       idempotent: true
     }
   );
@@ -619,7 +677,7 @@ export async function createBankAccount(input: {
 }
 
 export async function createWithdrawal(input: { bank_account_id: number; amount: string; note?: string }) {
-  return request<Json>("/api/wallet/withdrawals/", {
+  return request<WithdrawalItem>("/api/wallet/withdrawals/", {
     method: "POST",
     body: JSON.stringify(input),
     idempotent: true
