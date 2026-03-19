@@ -11,6 +11,7 @@ import SettingsPage from "./pages/SettingsPage";
 import ConnectYandexPage from "./pages/ConnectYandexPage";
 import YandexOpsPage from "./pages/YandexOpsPage";
 import FleetMembersPage from "./pages/FleetMembersPage";
+import DriverMappingsPage from "./pages/DriverMappingsPage";
 import LoginPage from "./pages/LoginPage";
 import { clearTokens, getAccessToken, getActiveRole, me } from "./lib/api";
 
@@ -84,6 +85,10 @@ export default function App() {
         <Route
           path="/fleet-members"
           element={isOwnerAdmin ? <FleetMembersPage /> : <Navigate to="/dashboard" replace />}
+        />
+        <Route
+          path="/driver-mappings"
+          element={isOwnerAdmin ? <DriverMappingsPage /> : <Navigate to="/dashboard" replace />}
         />
         <Route
           path="/connect-yandex"

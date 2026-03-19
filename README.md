@@ -61,6 +61,8 @@ This uses PostgreSQL on `localhost:5433` with:
 - `POST /api/auth/verify-code/`
 - `GET /api/auth/fleet-members/?fleet_name=<name>` (admin/owner only)
 - `PATCH /api/auth/fleet-members/role/` (admin/owner only)
+- `GET /api/auth/driver-mappings/?fleet_name=<name>` (admin/owner only)
+- `PATCH /api/auth/driver-mappings/<binding_id>/` (admin/owner only)
 - `GET /api/wallet/balance/`
 - `GET /api/wallet/bank-accounts/`
 - `POST /api/wallet/bank-accounts/`
@@ -222,6 +224,49 @@ Cron example (every 10 minutes):
 
 ```bash
 */10 * * * * cd /Users/emilshalamberidze/Desktop/expertpay/backend && /Users/emilshalamberidze/Desktop/expertpay/backend/.venv/bin/python manage.py sync_yandex_live --limit 100 >> /tmp/expertpay-sync.log 2>&1
+```
+
+### Automatic background sync jobs
+The backend now has a single production-friendly scheduler entry point that reuses the existing sync services:
+
+```bash
+cd backend
+../backend/.venv/bin/python manage.py run_integration_sync_jobs
+```
+
+This runs:
+- Yandex live earnings sync
+- BoG incoming deposit sync
+- BoG payout status sync
+
+Useful scopes:
+
+```bash
+../backend/.venv/bin/python manage.py run_integration_sync_jobs --job yandex
+../backend/.venv/bin/python manage.py run_integration_sync_jobs --job bog_deposits
+../backend/.venv/bin/python manage.py run_integration_sync_jobs --job bog_payouts
+../backend/.venv/bin/python manage.py run_integration_sync_jobs --user-id 1
+../backend/.venv/bin/python manage.py run_integration_sync_jobs --fleet-name "New Tech"
+../backend/.venv/bin/python manage.py run_integration_sync_jobs --connection-id 12
+../backend/.venv/bin/python manage.py run_integration_sync_jobs --include-inactive
+```
+
+Yandex-specific options:
+
+```bash
+../backend/.venv/bin/python manage.py run_integration_sync_jobs --job yandex --limit 200 --full-sync
+../backend/.venv/bin/python manage.py run_integration_sync_jobs --job yandex --dry-run
+```
+
+Each run is safe to repeat because it reuses the existing idempotent sync services and records last-run details into each provider connection config:
+- `last_live_sync`
+- `last_deposit_sync`
+- `last_payout_sync`
+
+Cron example for automatic production polling (every 5 minutes):
+
+```bash
+*/5 * * * * cd /Users/emilshalamberidze/Desktop/expertpay/backend && /Users/emilshalamberidze/Desktop/expertpay/backend/.venv/bin/python manage.py run_integration_sync_jobs >> /tmp/expertpay-background-sync.log 2>&1
 ```
 
 ### BoG payout status polling

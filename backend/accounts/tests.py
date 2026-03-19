@@ -4,7 +4,7 @@ from rest_framework import status
 from rest_framework.test import APIRequestFactory
 from rest_framework.test import APITestCase
 
-from accounts.models import Fleet, FleetPhoneBinding
+from accounts.models import DriverFleetMembership, Fleet, FleetPhoneBinding
 from accounts.roles import get_request_fleet_binding, meets_min_role
 
 
@@ -126,3 +126,101 @@ class FleetRoleManagementTests(APITestCase):
         self.assertFalse(
             meets_min_role(binding=None, minimum_role=FleetPhoneBinding.Role.DRIVER)
         )
+
+
+class DriverYandexMappingApiTests(APITestCase):
+    def setUp(self):
+        self.fleet = Fleet.objects.create(name="Mapping Fleet")
+        self.other_fleet = Fleet.objects.create(name="Mapping Other Fleet")
+        self.owner = User.objects.create_user(username="mapping_owner", password="pass1234")
+        self.other_owner = User.objects.create_user(username="mapping_other_owner", password="pass1234")
+        self.driver = User.objects.create_user(username="mapping_driver", password="pass1234")
+
+        FleetPhoneBinding.objects.create(
+            fleet=self.fleet,
+            user=self.owner,
+            phone_number="598555552",
+            role=FleetPhoneBinding.Role.OWNER,
+            is_active=True,
+        )
+        FleetPhoneBinding.objects.create(
+            fleet=self.other_fleet,
+            user=self.other_owner,
+            phone_number="598555553",
+            role=FleetPhoneBinding.Role.OWNER,
+            is_active=True,
+        )
+        self.driver_binding = FleetPhoneBinding.objects.create(
+            fleet=self.fleet,
+            user=self.driver,
+            phone_number="598555551",
+            role=FleetPhoneBinding.Role.DRIVER,
+            is_active=True,
+        )
+
+    def test_owner_can_list_driver_mappings(self):
+        DriverFleetMembership.objects.create(
+            user=self.driver,
+            fleet=self.fleet,
+            yandex_external_driver_id="drv-map-1",
+            is_active=True,
+        )
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.get(reverse("fleet-driver-mappings"), {"fleet_name": self.fleet.name})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["username"], self.driver.username)
+        self.assertTrue(response.data[0]["has_mapping"])
+        self.assertEqual(response.data[0]["yandex_external_driver_id"], "drv-map-1")
+
+    def test_driver_cannot_list_driver_mappings(self):
+        self.client.force_authenticate(self.driver)
+
+        response = self.client.get(reverse("fleet-driver-mappings"), {"fleet_name": self.fleet.name})
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_owner_can_update_driver_mapping(self):
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.patch(
+            reverse("fleet-driver-mapping-update", kwargs={"binding_id": self.driver_binding.id}),
+            data={"fleet_name": self.fleet.name, "yandex_external_driver_id": "drv-map-2"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        membership = DriverFleetMembership.objects.get(user=self.driver)
+        self.assertEqual(membership.fleet, self.fleet)
+        self.assertEqual(membership.yandex_external_driver_id, "drv-map-2")
+        self.assertTrue(response.data["has_mapping"])
+
+    def test_cross_fleet_mapping_update_is_blocked(self):
+        self.client.force_authenticate(self.other_owner)
+
+        response = self.client.patch(
+            reverse("fleet-driver-mapping-update", kwargs={"binding_id": self.driver_binding.id}),
+            data={"fleet_name": self.other_fleet.name, "yandex_external_driver_id": "drv-map-cross"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_driver_assigned_to_other_fleet_cannot_be_hijacked(self):
+        DriverFleetMembership.objects.create(
+            user=self.driver,
+            fleet=self.other_fleet,
+            yandex_external_driver_id="drv-other-fleet",
+            is_active=True,
+        )
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.patch(
+            reverse("fleet-driver-mapping-update", kwargs={"binding_id": self.driver_binding.id}),
+            data={"fleet_name": self.fleet.name, "yandex_external_driver_id": "drv-map-3"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)

@@ -12,6 +12,7 @@ const OWNER_MENU_ITEMS = [
 const ADMIN_OWNER_MENU_ITEMS = [
   { to: "/deposit-review", label: "Deposit Review" },
   { to: "/fleet-members", label: "Team Access" },
+  { to: "/driver-mappings", label: "Driver Mappings" },
   { to: "/settings", label: "Reconciliation" },
   { to: "/connect-yandex", label: "Yandex Ops" },
   { to: "/yandex-data", label: "Yandex Data" }

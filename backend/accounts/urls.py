@@ -2,6 +2,8 @@ from django.urls import path
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from .views import (
+    FleetDriverMappingUpdateView,
+    FleetDriverMappingsView,
     FleetListView,
     FleetMemberRoleUpdateView,
     FleetMembersView,
@@ -22,4 +24,6 @@ urlpatterns = [
     path("verify-code/", VerifyFleetCodeView.as_view(), name="verify-fleet-code"),
     path("fleet-members/", FleetMembersView.as_view(), name="fleet-members"),
     path("fleet-members/role/", FleetMemberRoleUpdateView.as_view(), name="fleet-member-role-update"),
+    path("driver-mappings/", FleetDriverMappingsView.as_view(), name="fleet-driver-mappings"),
+    path("driver-mappings/<int:binding_id>/", FleetDriverMappingUpdateView.as_view(), name="fleet-driver-mapping-update"),
 ]

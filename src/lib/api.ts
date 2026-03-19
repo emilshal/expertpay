@@ -136,6 +136,22 @@ export type FleetMember = {
   created_at: string;
 };
 
+export type DriverYandexMapping = {
+  id: number;
+  fleet: number;
+  user_id: number;
+  username: string;
+  first_name: string;
+  last_name: string;
+  phone_number: string;
+  role: "driver";
+  is_active: boolean;
+  has_mapping: boolean;
+  yandex_external_driver_id: string;
+  mapping_conflict: boolean;
+  mapping_conflict_fleet_name?: string | null;
+};
+
 export type WalletBalance = {
   balance: string;
   currency: string;
@@ -596,6 +612,27 @@ export async function updateFleetMemberRole(input: {
   return request<FleetMember>("/api/auth/fleet-members/role/", {
     method: "PATCH",
     body: JSON.stringify(input),
+    idempotent: true
+  });
+}
+
+export async function fleetDriverMappings(fleetName: string) {
+  return request<DriverYandexMapping[]>(
+    `/api/auth/driver-mappings/?fleet_name=${encodeURIComponent(fleetName)}`
+  );
+}
+
+export async function updateFleetDriverMapping(input: {
+  binding_id: number;
+  fleet_name: string;
+  yandex_external_driver_id: string;
+}) {
+  return request<DriverYandexMapping>(`/api/auth/driver-mappings/${input.binding_id}/`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      fleet_name: input.fleet_name,
+      yandex_external_driver_id: input.yandex_external_driver_id
+    }),
     idempotent: true
   });
 }

@@ -1,8 +1,10 @@
 from decimal import Decimal
+from io import StringIO
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.core.management import call_command
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework import status
@@ -309,6 +311,51 @@ class YandexDriverBalanceImportTests(APITestCase):
         account_two = LedgerAccount.objects.get(user=driver_two, account_type=LedgerAccount.AccountType.DRIVER_AVAILABLE)
         self.assertEqual(get_account_balance(account_one), Decimal("13.00"))
         self.assertEqual(get_account_balance(account_two), Decimal("21.50"))
+
+    def test_unmapped_yandex_event_does_not_credit_any_driver(self):
+        self._create_driver_membership("mapped_driver_six", "drv-206")
+        self._create_event(external_id="tx-206", driver_external_id="drv-unmapped", amount="15.00")
+
+        result = import_unprocessed_events(connection=self._ensure_connection())
+
+        self.assertEqual(result["imported_count"], 0)
+        self.assertEqual(
+            LedgerEntry.objects.filter(
+                account__account_type=LedgerAccount.AccountType.DRIVER_AVAILABLE,
+                reference_type="external_event",
+            ).count(),
+            0,
+        )
+
+    def test_cross_fleet_mapping_isolation_prevents_wrong_driver_credit(self):
+        other_owner = User.objects.create_user(username="other_yandex_owner", password="pass1234")
+        other_fleet = Fleet.objects.create(name="Yandex Import Other Fleet")
+        other_driver = User.objects.create_user(username="other_yandex_driver", password="pass1234")
+        FleetPhoneBinding.objects.create(
+            fleet=other_fleet,
+            user=other_owner,
+            phone_number="598722223",
+            role=FleetPhoneBinding.Role.OWNER,
+            is_active=True,
+        )
+        DriverFleetMembership.objects.create(
+            user=other_driver,
+            fleet=other_fleet,
+            yandex_external_driver_id="drv-207",
+            is_active=True,
+        )
+        self._create_driver_membership("mapped_driver_seven", "drv-208")
+        self._create_event(external_id="tx-207", driver_external_id="drv-207", amount="18.00")
+
+        result = import_unprocessed_events(connection=self._ensure_connection())
+
+        self.assertEqual(result["imported_count"], 0)
+        self.assertFalse(
+            LedgerEntry.objects.filter(
+                account__account_type=LedgerAccount.AccountType.DRIVER_AVAILABLE,
+                reference_type="external_event",
+            ).exists()
+        )
 
     def test_connection_is_reused_for_same_user(self):
         first = self.client.post(reverse("yandex-connect"), data={}, format="json")
@@ -1542,6 +1589,175 @@ class BogTokenApiTests(APITestCase):
         self.assertEqual(first, "cached-token-value")
         self.assertEqual(second, "cached-token-value")
         self.assertEqual(mocked_test.call_count, 1)
+
+
+class IntegrationBackgroundJobCommandTests(APITestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(username="jobs_owner", password="pass1234")
+        self.other_owner = User.objects.create_user(username="jobs_other_owner", password="pass1234")
+        self.fleet = Fleet.objects.create(name="Jobs Fleet A")
+        self.other_fleet = Fleet.objects.create(name="Jobs Fleet B")
+        FleetPhoneBinding.objects.create(
+            fleet=self.fleet,
+            user=self.owner,
+            phone_number="598744441",
+            role=FleetPhoneBinding.Role.OWNER,
+            is_active=True,
+        )
+        FleetPhoneBinding.objects.create(
+            fleet=self.other_fleet,
+            user=self.other_owner,
+            phone_number="598744442",
+            role=FleetPhoneBinding.Role.OWNER,
+            is_active=True,
+        )
+        self.yandex_connection = ProviderConnection.objects.create(
+            user=self.owner,
+            provider=ProviderConnection.Provider.YANDEX,
+            external_account_id="jobs-yandex-a",
+            status="active",
+            config={},
+        )
+        self.bog_connection = ProviderConnection.objects.create(
+            user=self.owner,
+            provider=ProviderConnection.Provider.BANK_OF_GEORGIA,
+            external_account_id="jobs-bog-a",
+            status="active",
+            config={},
+        )
+        self.other_yandex_connection = ProviderConnection.objects.create(
+            user=self.other_owner,
+            provider=ProviderConnection.Provider.YANDEX,
+            external_account_id="jobs-yandex-b",
+            status="active",
+            config={},
+        )
+        self.other_bog_connection = ProviderConnection.objects.create(
+            user=self.other_owner,
+            provider=ProviderConnection.Provider.BANK_OF_GEORGIA,
+            external_account_id="jobs-bog-b",
+            status="active",
+            config={},
+        )
+        self.inactive_connection = ProviderConnection.objects.create(
+            user=self.owner,
+            provider=ProviderConnection.Provider.YANDEX,
+            external_account_id="jobs-yandex-inactive",
+            status="error",
+            config={},
+        )
+
+    @patch("integrations.jobs.sync_open_bog_payouts")
+    @patch("integrations.jobs.sync_bog_deposits")
+    @patch("integrations.jobs.live_sync_yandex_data")
+    def test_run_integration_sync_jobs_runs_all_active_jobs(self, mocked_yandex, mocked_deposits, mocked_payouts):
+        mocked_yandex.return_value = {
+            "ok": True,
+            "detail": "ok",
+            "drivers": {"fetched": 2, "upserted_profiles": 2},
+            "transactions": {"fetched": 3, "imported_count": 1, "imported_total": "12.50"},
+        }
+        mocked_deposits.return_value = {
+            "ok": True,
+            "detail": "ok",
+            "checked_count": 4,
+            "matched_count": 2,
+            "credited_count": 1,
+            "unmatched_count": 1,
+            "credited_total": "40.00",
+        }
+        mocked_payouts.return_value = {
+            "checked_count": 3,
+            "updated_count": 2,
+            "error_count": 0,
+            "errors": [],
+        }
+
+        stdout = StringIO()
+        call_command("run_integration_sync_jobs", stdout=stdout)
+
+        self.assertEqual(mocked_yandex.call_count, 2)
+        self.assertEqual(mocked_deposits.call_count, 2)
+        self.assertEqual(mocked_payouts.call_count, 2)
+        self.assertIn("Yandex sync: connections=2 ok=2 errors=0 imported=2 total=25.00", stdout.getvalue())
+        self.assertIn("BoG deposit sync: connections=2 ok=2 errors=0 checked=8 matched=4 credited=2 total=80.00", stdout.getvalue())
+        self.assertIn("BoG payout sync: connections=2 ok=2 errors=0 checked=6 updated=4 payout_errors=0", stdout.getvalue())
+
+        self.yandex_connection.refresh_from_db()
+        self.bog_connection.refresh_from_db()
+        self.assertIn("last_live_sync", self.yandex_connection.config)
+        self.assertIn("last_deposit_sync", self.bog_connection.config)
+        self.assertIn("last_payout_sync", self.bog_connection.config)
+
+    @patch("integrations.jobs.sync_open_bog_payouts")
+    @patch("integrations.jobs.sync_bog_deposits")
+    @patch("integrations.jobs.live_sync_yandex_data")
+    def test_run_integration_sync_jobs_can_scope_to_one_fleet(self, mocked_yandex, mocked_deposits, mocked_payouts):
+        mocked_yandex.return_value = {
+            "ok": True,
+            "detail": "ok",
+            "drivers": {"fetched": 1, "upserted_profiles": 1},
+            "transactions": {"fetched": 1, "imported_count": 1, "imported_total": "10.00"},
+        }
+        mocked_deposits.return_value = {
+            "ok": True,
+            "detail": "ok",
+            "checked_count": 2,
+            "matched_count": 1,
+            "credited_count": 1,
+            "unmatched_count": 0,
+            "credited_total": "10.00",
+        }
+        mocked_payouts.return_value = {
+            "checked_count": 1,
+            "updated_count": 1,
+            "error_count": 0,
+            "errors": [],
+        }
+
+        call_command("run_integration_sync_jobs", "--fleet-name", self.fleet.name)
+
+        self.assertEqual(mocked_yandex.call_count, 1)
+        self.assertEqual(mocked_yandex.call_args.kwargs["connection"].id, self.yandex_connection.id)
+        self.assertEqual(mocked_deposits.call_count, 1)
+        self.assertEqual(mocked_deposits.call_args.kwargs["connection"].id, self.bog_connection.id)
+        self.assertEqual(mocked_payouts.call_count, 1)
+        self.assertEqual(mocked_payouts.call_args.kwargs["connection"].id, self.bog_connection.id)
+
+    @patch("integrations.jobs.sync_open_bog_payouts")
+    @patch("integrations.jobs.sync_bog_deposits")
+    @patch("integrations.jobs.live_sync_yandex_data")
+    def test_run_integration_sync_jobs_can_scope_to_single_user(self, mocked_yandex, mocked_deposits, mocked_payouts):
+        mocked_yandex.return_value = {
+            "ok": True,
+            "detail": "ok",
+            "drivers": {"fetched": 1, "upserted_profiles": 1},
+            "transactions": {"fetched": 1, "imported_count": 0, "imported_total": "0.00"},
+        }
+        mocked_deposits.return_value = {
+            "ok": True,
+            "detail": "ok",
+            "checked_count": 0,
+            "matched_count": 0,
+            "credited_count": 0,
+            "unmatched_count": 0,
+            "credited_total": "0.00",
+        }
+        mocked_payouts.return_value = {
+            "checked_count": 0,
+            "updated_count": 0,
+            "error_count": 0,
+            "errors": [],
+        }
+
+        call_command("run_integration_sync_jobs", "--user-id", str(self.owner.id))
+
+        self.assertEqual(mocked_yandex.call_count, 1)
+        self.assertEqual(mocked_yandex.call_args.kwargs["connection"].user_id, self.owner.id)
+        self.assertEqual(mocked_deposits.call_count, 1)
+        self.assertEqual(mocked_deposits.call_args.kwargs["connection"].user_id, self.owner.id)
+        self.assertEqual(mocked_payouts.call_count, 1)
+        self.assertEqual(mocked_payouts.call_args.kwargs["connection"].user_id, self.owner.id)
 
 
 class BogCardPaymentsApiTests(APITestCase):

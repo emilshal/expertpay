@@ -213,6 +213,11 @@ export default function OwnerDashboardPage() {
             <div className="txTitle">Manage drivers and roles</div>
             <div className="txSub">Update access and keep fleet membership current.</div>
           </Link>
+          <Link className="card ownerLinkCard" to="/driver-mappings">
+            <div className="ownerLinkEyebrow">Mappings</div>
+            <div className="txTitle">Review Yandex driver links</div>
+            <div className="txSub">Keep fleet earnings attached to the correct driver accounts.</div>
+          </Link>
           <Link className="card ownerLinkCard" to="/settings">
             <div className="ownerLinkEyebrow">Reconciliation</div>
             <div className="txTitle">Check treasury health</div>
