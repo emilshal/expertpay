@@ -58,12 +58,16 @@ class OwnerFleetSummarySerializer(serializers.Serializer):
     total_fees = serializers.DecimalField(max_digits=14, decimal_places=2)
     pending_payouts_count = serializers.IntegerField()
     pending_payouts_total = serializers.DecimalField(max_digits=14, decimal_places=2)
+    unmatched_deposits_count = serializers.IntegerField()
+    failed_payouts_count = serializers.IntegerField()
+    failed_payouts_total = serializers.DecimalField(max_digits=14, decimal_places=2)
     active_drivers_count = serializers.IntegerField()
     pending_payouts = OwnerPendingPayoutSerializer(many=True)
 
 
 class DepositSerializer(serializers.ModelSerializer):
     fleet_name = serializers.CharField(source="fleet.name", read_only=True)
+    sync_source = serializers.SerializerMethodField()
 
     class Meta:
         model = Deposit
@@ -80,13 +84,19 @@ class DepositSerializer(serializers.ModelSerializer):
             "payer_inn",
             "payer_account_number",
             "note",
+            "sync_source",
             "completed_at",
             "created_at",
         )
 
+    def get_sync_source(self, obj):
+        metadata = obj.raw_payload.get("_expertpay_sync", {}) if isinstance(obj.raw_payload, dict) else {}
+        return metadata.get("source", "activity_poll")
+
 
 class IncomingBankTransferSerializer(serializers.ModelSerializer):
     fleet_name = serializers.CharField(source="fleet.name", read_only=True)
+    sync_source = serializers.SerializerMethodField()
 
     class Meta:
         model = IncomingBankTransfer
@@ -105,14 +115,33 @@ class IncomingBankTransferSerializer(serializers.ModelSerializer):
             "booking_date",
             "value_date",
             "match_status",
+            "sync_source",
             "created_at",
             "updated_at",
         )
+
+    def get_sync_source(self, obj):
+        metadata = obj.raw_payload.get("_expertpay_sync", {}) if isinstance(obj.raw_payload, dict) else {}
+        return metadata.get("source", "activity_poll")
 
 
 class IncomingBankTransferMatchSerializer(serializers.Serializer):
     fleet_name = serializers.CharField(max_length=120, required=False, allow_blank=True)
     phone_number = serializers.CharField(max_length=32, required=False, allow_blank=True)
+
+
+class DepositSyncRequestSerializer(serializers.Serializer):
+    start_date = serializers.DateField(required=False)
+    end_date = serializers.DateField(required=False)
+
+    def validate(self, attrs):
+        start_date = attrs.get("start_date")
+        end_date = attrs.get("end_date")
+        if bool(start_date) != bool(end_date):
+            raise serializers.ValidationError("Both start_date and end_date are required for backfill.")
+        if start_date and end_date and start_date > end_date:
+            raise serializers.ValidationError("start_date must be on or before end_date.")
+        return attrs
 
 
 class WithdrawalCreateSerializer(serializers.Serializer):

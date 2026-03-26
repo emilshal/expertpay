@@ -280,10 +280,77 @@ body::after {
   color: #ffb0b0;
 }
 
+.mappingCode {
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  color: var(--text-0);
+}
+
+.ownerAlerts {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.ownerAlertCard {
+  text-decoration: none;
+  color: inherit;
+}
+
+.ownerAlertEyebrow {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--text-0);
+}
+
+.ownerAlertAction {
+  margin-top: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-0);
+}
+
+.ownerAlertdanger {
+  box-shadow: inset 0 0 0 1px rgba(255, 116, 116, 0.28);
+  background: linear-gradient(180deg, rgba(74, 18, 24, 0.9), rgba(41, 10, 14, 0.94));
+}
+
+.ownerAlertwarn {
+  box-shadow: inset 0 0 0 1px rgba(255, 208, 102, 0.24);
+  background: linear-gradient(180deg, rgba(79, 53, 10, 0.88), rgba(47, 31, 7, 0.94));
+}
+
+.ownerAlertinfo {
+  box-shadow: inset 0 0 0 1px rgba(120, 178, 255, 0.22);
+  background: linear-gradient(180deg, rgba(17, 43, 82, 0.86), rgba(10, 26, 53, 0.94));
+}
+
+.platformHero {
+  box-shadow:
+    var(--shadow),
+    inset 0 0 0 1px rgba(120, 178, 255, 0.14),
+    inset 0 0 120px rgba(74, 135, 255, 0.08);
+}
+
 .sideMenuNav {
   display: grid;
   gap: 8px;
   align-content: start;
+}
+
+.sideMenuSection {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.sideMenuSectionLabel {
+  margin-bottom: 10px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
 }
 
 .sideMenuLink {
@@ -308,6 +375,10 @@ body::after {
 .sideMenuLinkActive {
   background: rgba(79, 97, 255, 0.22);
   box-shadow: inset 0 0 0 1px rgba(122, 134, 255, 0.3);
+}
+
+.sideMenuLinkSecondary {
+  color: var(--text-2);
 }
 
 .sideMenuLogout {
@@ -738,6 +809,11 @@ body::after {
   gap: 12px;
 }
 
+.ownerInternalTools {
+  display: grid;
+  gap: 12px;
+}
+
 .ownerLinkCard {
   display: grid;
   gap: 6px;
@@ -750,6 +826,22 @@ body::after {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-2);
+}
+
+.internalToolsPanel {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.internalToolsPanel summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--text-0);
+}
+
+.internalToolsCopy {
+  margin: 12px 0 0;
 }
 
 .dashboardQuickRow {

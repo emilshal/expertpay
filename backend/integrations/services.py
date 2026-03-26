@@ -565,6 +565,7 @@ def sync_bog_deposits(*, connection: ProviderConnection, use_statement: bool = F
 
     response = _bog_request(connection=connection, method="GET", endpoint=endpoint)
     records = _bog_records(response.get("body"))
+    sync_source = "backfill" if use_statement else "activity_poll"
 
     checked_count = 0
     matched_count = 0
@@ -584,6 +585,16 @@ def sync_bog_deposits(*, connection: ProviderConnection, use_statement: bool = F
         value_date_raw = record.get("ValueDate") or record.get("DocumentValueDate")
         booking_date = parse_date(str(booking_date_raw)) if booking_date_raw else None
         value_date = parse_date(str(value_date_raw)) if value_date_raw else None
+        raw_payload = {
+            "record": record,
+            "_expertpay_sync": {
+                "source": sync_source,
+                "use_statement": use_statement,
+                "start_date": str(start_date) if start_date else "",
+                "end_date": str(end_date) if end_date else "",
+                "endpoint": endpoint,
+            },
+        }
 
         checked_count += 1
         matched_fleet, matched_reference = _find_fleet_by_deposit_reference(reference_text)
@@ -614,7 +625,7 @@ def sync_bog_deposits(*, connection: ProviderConnection, use_statement: bool = F
                 "booking_date": booking_date or None,
                 "value_date": value_date or None,
                 "match_status": match_status,
-                "raw_payload": record,
+                "raw_payload": raw_payload,
             },
         )
         if not created_transfer:
@@ -628,7 +639,7 @@ def sync_bog_deposits(*, connection: ProviderConnection, use_statement: bool = F
             transfer.payer_account_number = payer_account_number
             transfer.booking_date = booking_date or None
             transfer.value_date = value_date or None
-            transfer.raw_payload = record
+            transfer.raw_payload = raw_payload
 
             if transfer.match_status != IncomingBankTransfer.MatchStatus.MATCHED:
                 transfer.user = connection.user if matched_fleet is not None else None
@@ -668,7 +679,7 @@ def sync_bog_deposits(*, connection: ProviderConnection, use_statement: bool = F
             currency=currency,
             reference_code=matched_reference or build_fleet_deposit_reference(effective_fleet),
             incoming_transfer=transfer,
-            raw_payload=record,
+            raw_payload=raw_payload,
             note=reference_text,
             payer_name=payer_name,
             payer_inn=payer_inn,
@@ -690,6 +701,9 @@ def sync_bog_deposits(*, connection: ProviderConnection, use_statement: bool = F
         "credited_total": str(credited_total),
         "http_status": response.get("http_status"),
         "endpoint": endpoint,
+        "sync_source": sync_source,
+        "start_date": str(start_date) if start_date else "",
+        "end_date": str(end_date) if end_date else "",
         "errors": None if response.get("ok") else response.get("body"),
     }
 

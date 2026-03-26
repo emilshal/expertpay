@@ -285,6 +285,144 @@ cd backend
 ../backend/.venv/bin/python manage.py sync_bog_deposits --user-id 1
 ```
 
+Date-range recovery backfill for missed or delayed transfers:
+
+```bash
+cd backend
+../backend/.venv/bin/python manage.py sync_bog_deposits --user-id 1 --start-date 2026-03-01 --end-date 2026-03-05
+```
+
+Notes:
+- normal sync uses BoG today-activity polling
+- backfill uses the BoG statement/date-range endpoint
+- rerunning a backfill is safe because deposit completion stays idempotent by `provider_transaction_id`
+- unmatched recovered transfers still go to the normal deposit review queue for manual matching
+
+### Live money smoke test checklist
+Use this runbook when you want to validate one real small fleet funding and one real small driver payout end to end.
+
+Recommended safety rules:
+- use one active fleet and one mapped driver only
+- use small GEL amounts
+- wait for each state change before moving to the next step
+- keep `Idempotency-Key` values unique if you call money APIs directly
+
+Operator sequence:
+
+1. Confirm the fleet and driver setup
+   - Owner login: open `Dashboard`, `Deposits`, and `Payouts`
+   - Driver login: open `My Wallet`
+   - Owner/admin only: confirm the driver exists in `Team Access`
+   - Owner/admin only: open `Driver Mappings` and verify the driver has the correct Yandex external driver ID
+
+2. Fund the fleet with a small BoG transfer
+   - In `Deposits`, copy the exact fleet reference code
+   - Send a small transfer into the company BoG account with that exact reference in the transfer comment
+   - Expected state:
+     - transfer appears after BoG sync
+     - if matched automatically, fleet reserve increases
+     - if reference is missing or stale, it appears in `Deposit Review`
+
+3. Sync deposits
+   - Normal polling:
+
+   ```bash
+   cd backend
+   ../backend/.venv/bin/python manage.py sync_bog_deposits --user-id <owner_user_id>
+   ```
+
+   - Fleet-scoped smoke sequence:
+
+   ```bash
+   cd backend
+   ../backend/.venv/bin/python manage.py run_money_smoke_sync --fleet-name "<fleet_name>" --skip-yandex --skip-payouts
+   ```
+
+   - Recovery backfill if the transfer was older or missed:
+
+   ```bash
+   cd backend
+   ../backend/.venv/bin/python manage.py sync_bog_deposits --user-id <owner_user_id> --start-date YYYY-MM-DD --end-date YYYY-MM-DD
+   ```
+
+   - If still unmatched, open `Deposit Review` and assign it to the same fleet
+
+4. Import Yandex earnings for the mapped driver
+   - Owner/admin only: open `Yandex Overview` and run `Sync Latest Data`
+   - CLI alternative:
+
+   ```bash
+   cd backend
+   ../backend/.venv/bin/python manage.py sync_yandex_live --user-id <owner_user_id> --limit 100
+   ```
+
+   - Fleet-scoped smoke sequence:
+
+   ```bash
+   cd backend
+   ../backend/.venv/bin/python manage.py run_money_smoke_sync --fleet-name "<fleet_name>" --skip-deposits --skip-payouts
+   ```
+
+   - Expected state:
+     - the mapped driver’s `My Wallet` balance increases
+     - the owner `Dashboard` still shows the same fleet reserve unless a payout happens
+     - unmapped Yandex events stay stored for audit/debug and do not credit a driver
+
+5. Submit one small driver withdrawal
+   - Driver login: make sure a bank account is saved
+   - In `My Wallet`, request a small withdrawal less than or equal to:
+     - driver available balance
+     - fleet reserve minus fleet-paid fee
+   - Expected state immediately after submit:
+     - withdrawal appears as `Requested` or `Processing`
+     - driver available balance drops by principal only
+     - fleet reserve is held for principal plus fee
+
+6. Send or poll the BoG payout
+   - Owner/admin only: open `Payouts`
+   - Use `Send to BoG` if the payout has not been submitted yet
+   - Use `Refresh all open BoG payouts` to poll live status
+   - CLI alternative:
+
+   ```bash
+   cd backend
+   ../backend/.venv/bin/python manage.py sync_bog_payouts --user-id <owner_user_id>
+   ```
+
+   - Fleet-scoped smoke sequence:
+
+   ```bash
+   cd backend
+   ../backend/.venv/bin/python manage.py run_money_smoke_sync --fleet-name "<fleet_name>" --skip-deposits --skip-yandex
+   ```
+
+   - Expected state:
+     - `Requested` or `Processing` while BoG is still open
+     - `Completed` when BoG settles
+     - `Failed` with a visible reason if BoG rejects or returns the payout
+
+7. Confirm reconciliation
+   - Owner/admin only: open `Reconciliation`
+   - Verify:
+     - treasury status is `OK`
+     - fleet reserve reflects deposit minus payout minus fleet fee
+     - driver available reflects earnings minus successful/pending withdrawal principal
+     - payout clearing is zero after final settlement, or equals pending payouts if still open
+     - platform fees reflect the fleet-paid withdrawal fee
+
+8. If something looks wrong
+   - Re-run the fleet-scoped smoke sync:
+
+   ```bash
+   cd backend
+   ../backend/.venv/bin/python manage.py run_money_smoke_sync --fleet-name "<fleet_name>"
+   ```
+
+   - Check `Deposit Review` for unmatched incoming transfers
+   - Check `Driver Mappings` if Yandex earnings did not land on the expected driver
+   - Check `Payouts` for BoG failure reason or pending open payout
+   - Check `Reconciliation` for which balance family is out of line
+
 ### CI
 GitHub Actions workflow runs on push/PR:
 - Django `check`

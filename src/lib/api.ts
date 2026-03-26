@@ -4,6 +4,9 @@ const ACCESS_TOKEN_KEY = "expertpay_access_token";
 const REFRESH_TOKEN_KEY = "expertpay_refresh_token";
 const ACTIVE_FLEET_NAME_KEY = "expertpay_active_fleet_name";
 const ACTIVE_ROLE_KEY = "expertpay_active_role";
+const PLATFORM_ADMIN_KEY = "expertpay_platform_admin";
+
+type SessionRole = "driver" | "operator" | "admin" | "owner";
 
 type Json = Record<string, unknown>;
 
@@ -32,23 +35,62 @@ export function getActiveFleetName() {
   return localStorage.getItem(ACTIVE_FLEET_NAME_KEY);
 }
 
-export function setActiveRole(role: "driver" | "operator" | "admin" | "owner") {
+export function setActiveRole(role: SessionRole) {
   localStorage.setItem(ACTIVE_ROLE_KEY, role);
 }
 
 export function getActiveRole() {
-  return localStorage.getItem(ACTIVE_ROLE_KEY) as "driver" | "operator" | "admin" | "owner" | null;
+  return localStorage.getItem(ACTIVE_ROLE_KEY) as SessionRole | null;
+}
+
+export function setIsPlatformAdmin(isPlatformAdmin: boolean) {
+  if (isPlatformAdmin) {
+    localStorage.setItem(PLATFORM_ADMIN_KEY, "true");
+    return;
+  }
+  localStorage.removeItem(PLATFORM_ADMIN_KEY);
+}
+
+export function getIsPlatformAdmin() {
+  return localStorage.getItem(PLATFORM_ADMIN_KEY) === "true";
 }
 
 export function setAuthTokens(access: string, refresh: string) {
   setTokens(access, refresh);
 }
 
+function clearFleetSessionState() {
+  localStorage.removeItem(ACTIVE_FLEET_NAME_KEY);
+  localStorage.removeItem(ACTIVE_ROLE_KEY);
+}
+
+type SessionPayload = {
+  fleet?: Fleet | null;
+  role?: SessionRole | null;
+  is_platform_admin?: boolean | null;
+};
+
+export function applyAuthSession(payload: SessionPayload) {
+  if (payload.fleet?.name) {
+    setActiveFleetName(payload.fleet.name);
+  } else {
+    localStorage.removeItem(ACTIVE_FLEET_NAME_KEY);
+  }
+
+  if (payload.role) {
+    setActiveRole(payload.role);
+  } else {
+    localStorage.removeItem(ACTIVE_ROLE_KEY);
+  }
+
+  setIsPlatformAdmin(Boolean(payload.is_platform_admin));
+}
+
 export function clearTokens() {
   localStorage.removeItem(ACCESS_TOKEN_KEY);
   localStorage.removeItem(REFRESH_TOKEN_KEY);
-  localStorage.removeItem(ACTIVE_FLEET_NAME_KEY);
-  localStorage.removeItem(ACTIVE_ROLE_KEY);
+  clearFleetSessionState();
+  localStorage.removeItem(PLATFORM_ADMIN_KEY);
 }
 
 async function refreshAccessToken() {
@@ -117,6 +159,7 @@ export type MeResponse = {
   email: string;
   fleet: Fleet | null;
   role: "driver" | "operator" | "admin" | "owner" | null;
+  is_platform_admin?: boolean;
 };
 
 export type Fleet = {
@@ -181,6 +224,7 @@ export type DepositItem = {
   payer_inn: string;
   payer_account_number: string;
   note: string;
+  sync_source?: "activity_poll" | "backfill";
   completed_at: string;
   created_at: string;
 };
@@ -200,6 +244,7 @@ export type IncomingBankTransferItem = {
   booking_date: string | null;
   value_date: string | null;
   match_status: "matched" | "unmatched" | "ignored";
+  sync_source?: "activity_poll" | "backfill";
   created_at: string;
   updated_at: string;
 };
@@ -256,8 +301,27 @@ export type OwnerFleetSummary = {
   total_fees: string;
   pending_payouts_count: number;
   pending_payouts_total: string;
+  unmatched_deposits_count: number;
+  failed_payouts_count: number;
+  failed_payouts_total: string;
   active_drivers_count: number;
   pending_payouts: OwnerPendingPayout[];
+};
+
+export type PlatformEarningsFleetItem = {
+  fleet_id: number;
+  fleet_name: string;
+  total_fees_earned: string;
+};
+
+export type PlatformEarningsSummary = {
+  currency: string;
+  total_fees_earned: string;
+  recent_totals: {
+    last_7_days: string;
+    last_30_days: string;
+  };
+  fees_by_fleet: PlatformEarningsFleetItem[];
 };
 
 export type YandexConnection = {
@@ -560,13 +624,13 @@ export async function login(username: string, password: string) {
     body: JSON.stringify({ username, password })
   });
   setTokens(payload.access, payload.refresh);
+  applyAuthSession({ fleet: null, role: null, is_platform_admin: false });
   return payload;
 }
 
 export async function me() {
   const payload = await request<MeResponse>("/api/auth/me/");
-  if (payload.fleet?.name) setActiveFleetName(payload.fleet.name);
-  if (payload.role) setActiveRole(payload.role);
+  applyAuthSession(payload);
   return payload;
 }
 
@@ -595,8 +659,11 @@ export async function verifyFleetCode(input: { challenge_id: number; code: strin
     }
   );
   setTokens(payload.access, payload.refresh);
-  if (payload.fleet?.name) setActiveFleetName(payload.fleet.name);
-  if (payload.role) setActiveRole(payload.role as "driver" | "operator" | "admin" | "owner");
+  applyAuthSession({
+    fleet: payload.fleet ?? payload.user?.fleet ?? null,
+    role: (payload.role as SessionRole | undefined) ?? payload.user?.role ?? null,
+    is_platform_admin: payload.user?.is_platform_admin,
+  });
   return payload;
 }
 
@@ -645,6 +712,10 @@ export async function ownerFleetSummary() {
   return request<OwnerFleetSummary>("/api/wallet/owner-summary/");
 }
 
+export async function platformEarningsSummary() {
+  return request<PlatformEarningsSummary>("/api/integrations/platform/earnings/");
+}
+
 export async function depositInstructions() {
   return request<DepositInstruction>("/api/wallet/deposit-instructions/");
 }
@@ -653,7 +724,13 @@ export async function depositsList() {
   return request<DepositItem[]>("/api/wallet/deposits/");
 }
 
-export async function syncDeposits() {
+export async function syncDeposits(input?: { start_date?: string; end_date?: string }) {
+  const payload: { start_date?: string; end_date?: string } = {};
+  if (input?.start_date && input?.end_date) {
+    payload.start_date = input.start_date;
+    payload.end_date = input.end_date;
+  }
+
   return request<{
     ok: boolean;
     configured: boolean;
@@ -666,10 +743,13 @@ export async function syncDeposits() {
     credited_total: string;
     http_status: number | null;
     endpoint: string;
+    sync_source?: "activity_poll" | "backfill";
+    start_date?: string;
+    end_date?: string;
     errors: unknown;
   }>("/api/wallet/deposits/sync/", {
     method: "POST",
-    body: JSON.stringify({}),
+    body: JSON.stringify(payload),
     idempotent: true
   });
 }

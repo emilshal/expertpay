@@ -5,7 +5,7 @@ from rest_framework.test import APIRequestFactory
 from rest_framework.test import APITestCase
 
 from accounts.models import DriverFleetMembership, Fleet, FleetPhoneBinding
-from accounts.roles import get_request_fleet_binding, meets_min_role
+from accounts.roles import get_request_fleet_binding, is_platform_admin, meets_min_role
 
 
 class FleetRoleManagementTests(APITestCase):
@@ -126,6 +126,23 @@ class FleetRoleManagementTests(APITestCase):
         self.assertFalse(
             meets_min_role(binding=None, minimum_role=FleetPhoneBinding.Role.DRIVER)
         )
+
+    def test_is_platform_admin_uses_staff_flag_only(self):
+        self.owner.is_staff = True
+        self.owner.save(update_fields=["is_staff"])
+
+        self.assertTrue(is_platform_admin(user=self.owner))
+        self.assertFalse(is_platform_admin(user=self.admin))
+
+    def test_me_response_includes_platform_admin_flag(self):
+        self.owner.is_staff = True
+        self.owner.save(update_fields=["is_staff"])
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.get(reverse("me"), HTTP_X_FLEET_NAME=self.fleet.name)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["is_platform_admin"])
 
 
 class DriverYandexMappingApiTests(APITestCase):

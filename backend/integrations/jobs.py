@@ -173,6 +173,9 @@ def run_bog_deposit_sync_jobs(
     connection_id=None,
     active_only=True,
     currency="GEL",
+    use_statement=False,
+    start_date=None,
+    end_date=None,
 ):
     checked_connections = 0
     ok_connections = 0
@@ -194,7 +197,16 @@ def run_bog_deposit_sync_jobs(
         checked_connections += 1
         checked_at = timezone.now().isoformat()
         try:
-            result = sync_bog_deposits(connection=connection, currency=currency)
+            if use_statement:
+                result = sync_bog_deposits(
+                    connection=connection,
+                    currency=currency,
+                    use_statement=True,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+            else:
+                result = sync_bog_deposits(connection=connection, currency=currency)
             ok = bool(result.get("ok"))
             checked_count += int(result.get("checked_count", 0) or 0)
             matched_count += int(result.get("matched_count", 0) or 0)
@@ -291,6 +303,7 @@ def run_bog_deposit_sync_jobs(
         "credited_count": credited_count,
         "credited_total": f"{credited_total.quantize(Decimal('0.01'))}",
         "unmatched_count": unmatched_count,
+        "sync_source": "backfill" if use_statement else "activity_poll",
         "results": results,
     }
 

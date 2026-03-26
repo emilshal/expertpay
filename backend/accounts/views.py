@@ -10,7 +10,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .roles import get_request_fleet_binding
+from .roles import get_request_fleet_binding, is_platform_admin
 from .models import DriverFleetMembership, Fleet, FleetPhoneBinding, LoginCodeChallenge
 from .serializers import (
     DriverYandexMappingSerializer,
@@ -43,6 +43,7 @@ class MeView(APIView):
         else:
             payload["fleet"] = None
             payload["role"] = None
+        payload["is_platform_admin"] = is_platform_admin(user=request.user)
         return Response(payload)
 
 

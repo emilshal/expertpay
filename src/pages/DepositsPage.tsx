@@ -62,6 +62,8 @@ export default function DepositsPage() {
     }
   }
 
+  const creditedTotal = deposits.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+
   return (
     <section className="card">
       <div className="cardTitleRow">
@@ -81,30 +83,43 @@ export default function DepositsPage() {
         </div>
       </div>
 
-      <p className="muted">Send a bank transfer to your company account, or use card top-up through BoG checkout.</p>
+      <p className="muted">
+        Fund your fleet reserve by bank transfer. Use the exact fleet reference code below so ExpertPay can match the money to your fleet after the next BoG sync.
+      </p>
 
       {error ? <p className="statusError">{error}</p> : null}
       {message ? <p className="statusHint">{message}</p> : null}
+
+      <div className="mappingStats">
+        <div className="mappingStat">
+          <span className="mappingStatValue">{Number(creditedTotal || 0).toFixed(2)} GEL</span>
+          <span className="mappingStatLabel">Credited so far</span>
+        </div>
+        <div className="mappingStat">
+          <span className="mappingStatValue">{deposits.length}</span>
+          <span className="mappingStatLabel">Matched deposits</span>
+        </div>
+      </div>
 
       {instructions ? (
         <div className="txList" role="list" style={{ marginTop: "14px" }}>
           <div className="txRow" role="listitem">
             <div className="txMain">
-              <div className="txTitle">Bank</div>
+              <div className="txTitle">Step 1: Send to this bank</div>
               <div className="txSub">{instructions.bank_name}</div>
             </div>
           </div>
 
           <div className="txRow" role="listitem">
             <div className="txMain">
-              <div className="txTitle">Account holder</div>
+              <div className="txTitle">Company account holder</div>
               <div className="txSub">{instructions.account_holder_name || "Company account"}</div>
             </div>
           </div>
 
           <div className="txRow" role="listitem">
             <div className="txMain">
-              <div className="txTitle">Account number</div>
+              <div className="txTitle">Destination account number</div>
               <div className="txSub">{instructions.account_number}</div>
             </div>
             <button className="btn btnSoft" type="button" onClick={() => void copyValue(instructions.account_number)}>
@@ -114,12 +129,22 @@ export default function DepositsPage() {
 
           <div className="txRow" role="listitem">
             <div className="txMain">
-              <div className="txTitle">Reference code</div>
-              <div className="txSub">{instructions.reference_code}</div>
+              <div className="txTitle">Step 2: Put this exact fleet reference in the transfer comment</div>
+              <div className="txSub mappingCode">{instructions.reference_code}</div>
+              <div className="txSub">Without this code, the transfer may wait in manual review before your reserve is credited.</div>
             </div>
             <button className="btn btnSoft" type="button" onClick={() => void copyValue(instructions.reference_code)}>
               Copy
             </button>
+          </div>
+
+          <div className="txRow" role="listitem">
+            <div className="txMain">
+              <div className="txTitle">Step 3: Wait for BoG sync and matching</div>
+              <div className="txSub">
+                Your fleet reserve updates after ExpertPay syncs incoming BoG activity and matches the transfer to this reference.
+              </div>
+            </div>
           </div>
         </div>
       ) : null}
@@ -136,16 +161,17 @@ export default function DepositsPage() {
                   {deposit.amount} {deposit.currency}
                 </div>
                 <div className="txSub">{deposit.payer_name || deposit.reference_code}</div>
+                <div className="txSub">Reference {deposit.reference_code}</div>
                 <div className="txSub">{deposit.completed_at}</div>
               </div>
-              <div className="txAmount pos">{deposit.status}</div>
+              <div className="txAmount pos">Credited</div>
             </div>
           ))
         ) : (
           <div className="txRow" role="listitem">
             <div className="txMain">
               <div className="txTitle">No deposits yet</div>
-              <div className="txSub">Once incoming transfers are matched, they will show here.</div>
+              <div className="txSub">Matched bank transfers will appear here once your fleet reserve is credited.</div>
             </div>
           </div>
         )}

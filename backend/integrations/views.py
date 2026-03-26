@@ -1,3 +1,6 @@
+from decimal import Decimal
+from datetime import timedelta
+
 from django.conf import settings
 from django.db.models import Count, Max, Q, Sum
 from django.utils import timezone
@@ -7,7 +10,10 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.models import FleetPhoneBinding
-from accounts.roles import get_request_fleet_binding, meets_min_role
+from accounts.roles import get_request_fleet_binding, is_platform_admin, meets_min_role
+from accounts.models import Fleet
+from ledger.models import LedgerAccount, LedgerEntry
+from ledger.services import get_or_create_platform_fee_account, get_account_balance
 from wallet.models import WithdrawalRequest
 
 from .models import (
@@ -88,6 +94,27 @@ def _get_or_create_bog_connection(user):
         defaults={"status": "active", "config": {"mode": "live"}},
     )
     return connection
+
+
+def _get_active_fleet_bog_connection(*, fleet):
+    bindings = FleetPhoneBinding.objects.filter(
+        fleet=fleet,
+        is_active=True,
+        user__is_active=True,
+        role__in=[FleetPhoneBinding.Role.OWNER, FleetPhoneBinding.Role.ADMIN],
+    ).order_by("-role", "created_at", "id")
+    for fleet_binding in bindings:
+        connection = (
+            ProviderConnection.objects.filter(
+                user=fleet_binding.user,
+                provider=ProviderConnection.Provider.BANK_OF_GEORGIA,
+            )
+            .order_by("id")
+            .first()
+        )
+        if connection is not None:
+            return connection
+    return None
 
 
 def _get_or_create_bog_payments_connection(user):
@@ -427,6 +454,9 @@ class ConnectBankSimulatorView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.OPERATOR):
+            return Response({"detail": "Only operator/admin/owner can use bank simulator payout tools."}, status=403)
         connection = _get_or_create_bank_sim_connection(request.user)
         return Response(ProviderConnectionSerializer(connection).data, status=status.HTTP_201_CREATED)
 
@@ -573,8 +603,19 @@ class ListBogPayoutsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        connection = _get_or_create_bog_connection(request.user)
-        payouts = connection.bog_payouts.select_related("withdrawal").order_by("-created_at")[:100]
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.OPERATOR):
+            return Response({"detail": "Only operator/admin/owner can view BoG payouts."}, status=403)
+
+        connection = _get_active_fleet_bog_connection(fleet=binding.fleet)
+        if connection is None:
+            return Response([], status=status.HTTP_200_OK)
+
+        payouts = (
+            connection.bog_payouts.select_related("withdrawal")
+            .filter(withdrawal__fleet=binding.fleet)
+            .order_by("-created_at", "-id")[:100]
+        )
         return Response(BogPayoutSerializer(payouts, many=True).data, status=status.HTTP_200_OK)
 
 
@@ -591,13 +632,15 @@ class SubmitBogPayoutView(APIView):
         serializer.is_valid(raise_exception=True)
         withdrawal_id = serializer.validated_data["withdrawal_id"]
 
-        withdrawal = WithdrawalRequest.objects.filter(id=withdrawal_id, user=request.user).first()
+        withdrawal = WithdrawalRequest.objects.filter(id=withdrawal_id, fleet=binding.fleet).first()
         if withdrawal is None:
             return Response({"detail": "Withdrawal not found."}, status=status.HTTP_404_NOT_FOUND)
         if withdrawal.status in {WithdrawalRequest.Status.COMPLETED, WithdrawalRequest.Status.FAILED}:
             return Response({"detail": "Withdrawal is already finalized."}, status=status.HTTP_400_BAD_REQUEST)
 
-        connection = _get_or_create_bog_connection(request.user)
+        connection = _get_active_fleet_bog_connection(fleet=binding.fleet)
+        if connection is None:
+            return Response({"detail": "Bank of Georgia connection is not configured."}, status=status.HTTP_400_BAD_REQUEST)
         try:
             payout, created = submit_withdrawal_to_bog(connection=connection, withdrawal=withdrawal)
         except ValueError as exc:
@@ -619,10 +662,12 @@ class SyncBogPayoutStatusView(APIView):
         serializer = SyncBogPayoutStatusSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        connection = _get_or_create_bog_connection(request.user)
+        connection = _get_active_fleet_bog_connection(fleet=binding.fleet)
+        if connection is None:
+            return Response({"detail": "Bank of Georgia connection is not configured."}, status=status.HTTP_400_BAD_REQUEST)
         payout = (
             BogPayout.objects.select_related("withdrawal")
-            .filter(id=payout_id, connection=connection, withdrawal__user=request.user)
+            .filter(id=payout_id, connection=connection, withdrawal__fleet=binding.fleet)
             .first()
         )
         if payout is None:
@@ -645,7 +690,9 @@ class SyncAllBogPayoutStatusesView(APIView):
         if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.OPERATOR):
             return Response({"detail": "Only operator/admin/owner can refresh BoG payout statuses."}, status=403)
 
-        connection = _get_or_create_bog_connection(request.user)
+        connection = _get_active_fleet_bog_connection(fleet=binding.fleet)
+        if connection is None:
+            return Response({"detail": "Bank of Georgia connection is not configured."}, status=status.HTTP_400_BAD_REQUEST)
         result = sync_open_bog_payouts(connection=connection)
         return Response(result, status=status.HTTP_200_OK)
 
@@ -654,8 +701,18 @@ class ListBankSimulatorPayoutsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        connection = _get_or_create_bank_sim_connection(request.user)
-        payouts = connection.bank_payouts.select_related("withdrawal").order_by("-created_at")[:100]
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.OPERATOR):
+            return Response({"detail": "Only operator/admin/owner can view bank simulator payouts."}, status=403)
+
+        payouts = (
+            BankSimulatorPayout.objects.select_related("withdrawal")
+            .filter(
+                Q(withdrawal__fleet=binding.fleet)
+                | Q(withdrawal__fleet__isnull=True, withdrawal__user=request.user)
+            )
+            .order_by("-created_at", "-id")[:100]
+        )
         return Response(BankSimulatorPayoutSerializer(payouts, many=True).data)
 
 
@@ -663,11 +720,18 @@ class SubmitBankSimulatorPayoutView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.OPERATOR):
+            return Response({"detail": "Only operator/admin/owner can submit bank simulator payouts."}, status=403)
+
         serializer = SubmitBankPayoutSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         withdrawal_id = serializer.validated_data["withdrawal_id"]
 
-        withdrawal = WithdrawalRequest.objects.filter(id=withdrawal_id, user=request.user).first()
+        withdrawal = WithdrawalRequest.objects.filter(id=withdrawal_id).filter(
+            Q(fleet=binding.fleet)
+            | Q(fleet__isnull=True, user=request.user)
+        ).first()
         if withdrawal is None:
             return Response({"detail": "Withdrawal not found."}, status=status.HTTP_404_NOT_FOUND)
         if withdrawal.status in {WithdrawalRequest.Status.COMPLETED, WithdrawalRequest.Status.FAILED}:
@@ -687,15 +751,22 @@ class UpdateBankSimulatorPayoutStatusView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, payout_id):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.OPERATOR):
+            return Response({"detail": "Only operator/admin/owner can refresh bank simulator payouts."}, status=403)
+
         serializer = UpdateBankPayoutStatusSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         target_status = serializer.validated_data["status"]
         failure_reason = serializer.validated_data.get("failure_reason", "")
 
-        connection = _get_or_create_bank_sim_connection(request.user)
         payout = (
             BankSimulatorPayout.objects.select_related("withdrawal")
-            .filter(id=payout_id, connection=connection, withdrawal__user=request.user)
+            .filter(id=payout_id)
+            .filter(
+                Q(withdrawal__fleet=binding.fleet)
+                | Q(withdrawal__fleet__isnull=True, withdrawal__user=request.user)
+            )
             .first()
         )
         if payout is None:
@@ -724,3 +795,87 @@ class ReconciliationSummaryView(APIView):
             build_reconciliation_report(user=request.user, fleet=binding.fleet),
             status=status.HTTP_200_OK,
         )
+
+
+class PlatformFinanceSummaryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not is_platform_admin(user=request.user):
+            return Response({"detail": "Only platform admins can view platform finance summary."}, status=403)
+
+        fee_account = get_or_create_platform_fee_account(currency="GEL")
+        payload = {
+            "currency": "GEL",
+            "platform_fee_balance": f"{get_account_balance(fee_account, 'GEL'):.2f}",
+            "fleet_count": Fleet.objects.count(),
+            "active_fleet_count": Fleet.objects.filter(phone_bindings__is_active=True).distinct().count(),
+        }
+        return Response(payload, status=status.HTTP_200_OK)
+
+
+class PlatformEarningsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not is_platform_admin(user=request.user):
+            return Response({"detail": "Only platform admins can view platform earnings."}, status=403)
+
+        currency = "GEL"
+        fee_entries = LedgerEntry.objects.filter(
+            account__account_type=LedgerAccount.AccountType.PLATFORM_FEE,
+            currency=currency,
+        ).order_by("created_at", "id")
+
+        total_fees_earned = sum((entry.amount for entry in fee_entries), start=Decimal("0.00"))
+        now = timezone.now()
+        last_7_days_total = sum(
+            (entry.amount for entry in fee_entries if entry.created_at >= now - timedelta(days=7)),
+            start=Decimal("0.00"),
+        )
+        last_30_days_total = sum(
+            (entry.amount for entry in fee_entries if entry.created_at >= now - timedelta(days=30)),
+            start=Decimal("0.00"),
+        )
+
+        withdrawal_entry_ids = [
+            int(entry.reference_id)
+            for entry in fee_entries
+            if entry.reference_type == "withdrawal" and str(entry.reference_id).isdigit()
+        ]
+        withdrawals = {
+            withdrawal.id: withdrawal
+            for withdrawal in WithdrawalRequest.objects.select_related("fleet").filter(id__in=withdrawal_entry_ids)
+        }
+        fleet_totals: dict[int, Decimal] = {}
+        for entry in fee_entries:
+            fleet_id = None
+            if entry.reference_type == "withdrawal" and str(entry.reference_id).isdigit():
+                withdrawal = withdrawals.get(int(entry.reference_id))
+                fleet_id = withdrawal.fleet_id if withdrawal else None
+            elif isinstance(entry.metadata, dict):
+                fleet_id = entry.metadata.get("fleet_id")
+            if fleet_id is None:
+                continue
+            fleet_totals[fleet_id] = fleet_totals.get(fleet_id, Decimal("0.00")) + entry.amount
+
+        fleets = {fleet.id: fleet for fleet in Fleet.objects.filter(id__in=fleet_totals.keys())}
+        fees_by_fleet = [
+            {
+                "fleet_id": fleet_id,
+                "fleet_name": fleets[fleet_id].name if fleet_id in fleets else f"Fleet {fleet_id}",
+                "total_fees_earned": f"{fleet_totals[fleet_id]:.2f}",
+            }
+            for fleet_id in sorted(fleet_totals.keys(), key=lambda item: fleets[item].name if item in fleets else str(item))
+        ]
+
+        payload = {
+            "currency": currency,
+            "total_fees_earned": f"{total_fees_earned:.2f}",
+            "recent_totals": {
+                "last_7_days": f"{last_7_days_total:.2f}",
+                "last_30_days": f"{last_30_days_total:.2f}",
+            },
+            "fees_by_fleet": fees_by_fleet,
+        }
+        return Response(payload, status=status.HTTP_200_OK)

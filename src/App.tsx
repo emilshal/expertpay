@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import AppShell from "./components/AppShell";
 import DriverDashboardPage from "./pages/DriverDashboardPage";
+import OperatorDashboardPage from "./pages/OperatorDashboardPage";
 import OwnerDashboardPage from "./pages/OwnerDashboardPage";
+import PlatformEarningsPage from "./pages/PlatformEarningsPage";
 import CardTopupPage from "./pages/CardTopupPage";
 import DepositsPage from "./pages/DepositsPage";
 import DepositReviewPage from "./pages/DepositReviewPage";
@@ -13,16 +15,19 @@ import YandexOpsPage from "./pages/YandexOpsPage";
 import FleetMembersPage from "./pages/FleetMembersPage";
 import DriverMappingsPage from "./pages/DriverMappingsPage";
 import LoginPage from "./pages/LoginPage";
-import { clearTokens, getAccessToken, getActiveRole, me } from "./lib/api";
+import { clearTokens, getAccessToken, getActiveRole, getIsPlatformAdmin, me } from "./lib/api";
 
 export default function App() {
   const [isChecking, setIsChecking] = useState(true);
   const [isAuthed, setAuthed] = useState(false);
   const [role, setRole] = useState<"driver" | "operator" | "admin" | "owner" | null>(getActiveRole());
+  const [isPlatformAdmin, setIsPlatformAdmin] = useState(getIsPlatformAdmin());
 
   async function refreshSession() {
     const token = getAccessToken();
     if (!token) {
+      setRole(null);
+      setIsPlatformAdmin(false);
       setAuthed(false);
       setIsChecking(false);
       return;
@@ -31,10 +36,12 @@ export default function App() {
     try {
       const profile = await me();
       setRole(profile.role);
+      setIsPlatformAdmin(Boolean(profile.is_platform_admin));
       setAuthed(true);
     } catch {
       clearTokens();
       setRole(null);
+      setIsPlatformAdmin(false);
       setAuthed(false);
     } finally {
       setIsChecking(false);
@@ -67,15 +74,29 @@ export default function App() {
   }
 
   const isDriver = role === "driver";
+  const isOperator = role === "operator";
   const isOwnerAdmin = role === "owner" || role === "admin";
+  const dashboardElement = isDriver
+    ? <DriverDashboardPage />
+    : isOperator
+      ? <OperatorDashboardPage />
+      : isOwnerAdmin
+        ? <OwnerDashboardPage />
+        : isPlatformAdmin
+          ? <Navigate to="/platform-earnings" replace />
+          : <Navigate to="/login" replace />;
 
   return (
     <AppShell>
       <Routes>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
-        <Route path="/dashboard" element={isDriver ? <DriverDashboardPage /> : <OwnerDashboardPage />} />
-        <Route path="/card-topup" element={isDriver ? <Navigate to="/dashboard" replace /> : <CardTopupPage />} />
-        <Route path="/deposits" element={isDriver ? <Navigate to="/dashboard" replace /> : <DepositsPage />} />
+        <Route path="/dashboard" element={dashboardElement} />
+        <Route
+          path="/platform-earnings"
+          element={isPlatformAdmin ? <PlatformEarningsPage /> : <Navigate to="/dashboard" replace />}
+        />
+        <Route path="/card-topup" element={isOwnerAdmin ? <CardTopupPage /> : <Navigate to="/dashboard" replace />} />
+        <Route path="/deposits" element={isOwnerAdmin ? <DepositsPage /> : <Navigate to="/dashboard" replace />} />
         <Route
           path="/deposit-review"
           element={isOwnerAdmin ? <DepositReviewPage /> : <Navigate to="/dashboard" replace />}

@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.db import transaction as db_transaction
-from django.db.models import Q, Sum
+from django.db.models import F, Q, Sum
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -29,6 +29,7 @@ from .serializers import (
     BankAccountSerializer,
     DepositInstructionSerializer,
     DepositSerializer,
+    DepositSyncRequestSerializer,
     IncomingBankTransferMatchSerializer,
     IncomingBankTransferSerializer,
     OwnerFleetSummarySerializer,
@@ -60,6 +61,27 @@ def _transaction_status(entry, transfer_statuses, withdrawal_statuses):
     if entry.entry_type.endswith("failed") or entry.entry_type.endswith("reversal"):
         return "failed"
     return "completed"
+
+
+def _get_active_fleet_bog_connection(*, fleet):
+    bindings = FleetPhoneBinding.objects.filter(
+        fleet=fleet,
+        is_active=True,
+        user__is_active=True,
+        role__in=[FleetPhoneBinding.Role.OWNER, FleetPhoneBinding.Role.ADMIN],
+    ).order_by("-role", "created_at", "id")
+    for fleet_binding in bindings:
+        connection = (
+            ProviderConnection.objects.filter(
+                user=fleet_binding.user,
+                provider=ProviderConnection.Provider.BANK_OF_GEORGIA,
+            )
+            .order_by("id")
+            .first()
+        )
+        if connection is not None:
+            return connection
+    return None
 
 
 def _fleet_transfer_review_queryset(*, fleet):
@@ -342,7 +364,12 @@ class WithdrawalListView(generics.ListAPIView):
     serializer_class = WithdrawalSerializer
 
     def get_queryset(self):
-        return WithdrawalRequest.objects.filter(user=self.request.user).select_related("bank_account")
+        binding = get_request_fleet_binding(user=self.request.user, request=self.request)
+        if meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.OPERATOR):
+            return WithdrawalRequest.objects.filter(fleet=binding.fleet).select_related("bank_account").order_by("-created_at", "-id")
+        if meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.DRIVER):
+            return WithdrawalRequest.objects.filter(user=self.request.user).select_related("bank_account").order_by("-created_at", "-id")
+        return WithdrawalRequest.objects.none()
 
 
 class WithdrawalStatusUpdateView(APIView):
@@ -531,7 +558,15 @@ class OwnerFleetSummaryView(APIView):
             .select_related("user")
             .order_by("-created_at", "-id")
         )
-        pending_payouts_total = pending_withdrawals.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+        pending_payouts_total = (
+            pending_withdrawals.aggregate(total=Sum(F("amount") + F("fee_amount")))["total"] or Decimal("0.00")
+        )
+        failed_withdrawals = WithdrawalRequest.objects.filter(
+            fleet=binding.fleet,
+            status=WithdrawalRequest.Status.FAILED,
+        )
+        failed_payouts_total = failed_withdrawals.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+        unmatched_deposits_count = _fleet_transfer_review_queryset(fleet=binding.fleet).count()
 
         pending_payouts = [
             {
@@ -563,6 +598,9 @@ class OwnerFleetSummaryView(APIView):
                 "total_fees": total_fees,
                 "pending_payouts_count": pending_withdrawals.count(),
                 "pending_payouts_total": pending_payouts_total,
+                "unmatched_deposits_count": unmatched_deposits_count,
+                "failed_payouts_count": failed_withdrawals.count(),
+                "failed_payouts_total": failed_payouts_total,
                 "active_drivers_count": active_drivers_count,
                 "pending_payouts": pending_payouts,
             }
@@ -685,12 +723,22 @@ class DepositSyncView(APIView):
         if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.OPERATOR):
             return Response({"detail": "Only operator/admin/owner can sync deposits from bank."}, status=403)
 
-        connection = ProviderConnection.objects.filter(
-            user=request.user,
-            provider=ProviderConnection.Provider.BANK_OF_GEORGIA,
-        ).first()
+        serializer = DepositSyncRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        start_date = serializer.validated_data.get("start_date")
+        end_date = serializer.validated_data.get("end_date")
+        use_statement = bool(start_date and end_date)
+        if use_statement and not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.ADMIN):
+            return Response({"detail": "Only admin/owner can run deposit backfill."}, status=403)
+
+        connection = _get_active_fleet_bog_connection(fleet=binding.fleet)
         if connection is None:
             return Response({"detail": "Bank of Georgia connection is not configured."}, status=status.HTTP_400_BAD_REQUEST)
 
-        result = sync_bog_deposits(connection=connection)
+        result = sync_bog_deposits(
+            connection=connection,
+            use_statement=use_statement,
+            start_date=start_date,
+            end_date=end_date,
+        )
         return Response(result, status=status.HTTP_200_OK)

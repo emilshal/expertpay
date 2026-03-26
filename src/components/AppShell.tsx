@@ -1,21 +1,29 @@
 import { PropsWithChildren, useEffect, useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
-import { clearTokens, getActiveFleetName, getActiveRole } from "../lib/api";
+import { clearTokens, getActiveFleetName, getActiveRole, getIsPlatformAdmin } from "../lib/api";
 
 const OWNER_MENU_ITEMS = [
   { to: "/dashboard", label: "Dashboard" },
   { to: "/deposits", label: "Deposits" },
-  { to: "/card-topup", label: "Card Top-Up" },
+  { to: "/payouts", label: "Payouts" },
+  { to: "/fleet-members", label: "Team Access" }
+];
+
+const OPERATOR_MENU_ITEMS = [
+  { to: "/dashboard", label: "Dashboard" },
   { to: "/payouts", label: "Payouts" }
 ];
 
 const ADMIN_OWNER_MENU_ITEMS = [
   { to: "/deposit-review", label: "Deposit Review" },
-  { to: "/fleet-members", label: "Team Access" },
   { to: "/driver-mappings", label: "Driver Mappings" },
   { to: "/settings", label: "Reconciliation" },
-  { to: "/connect-yandex", label: "Yandex Ops" },
+  { to: "/connect-yandex", label: "Yandex Overview" },
   { to: "/yandex-data", label: "Yandex Data" }
+];
+
+const PLATFORM_MENU_ITEMS = [
+  { to: "/platform-earnings", label: "Platform Earnings" }
 ];
 
 const DRIVER_MENU_ITEMS = [
@@ -28,13 +36,11 @@ export default function AppShell({ children }: PropsWithChildren) {
   const [menuOpen, setMenuOpen] = useState(false);
   const fleetName = getActiveFleetName();
   const role = getActiveRole();
+  const isPlatformAdmin = getIsPlatformAdmin();
   const isDriver = role === "driver";
+  const isOperator = role === "operator";
   const isOwnerAdmin = role === "owner" || role === "admin";
-  const menuItems = isDriver
-    ? DRIVER_MENU_ITEMS
-    : isOwnerAdmin
-      ? [...OWNER_MENU_ITEMS, ...ADMIN_OWNER_MENU_ITEMS]
-      : OWNER_MENU_ITEMS;
+  const menuItems = isDriver ? DRIVER_MENU_ITEMS : isOperator ? OPERATOR_MENU_ITEMS : isOwnerAdmin ? OWNER_MENU_ITEMS : [];
 
   useEffect(() => {
     setMenuOpen(false);
@@ -86,7 +92,15 @@ export default function AppShell({ children }: PropsWithChildren) {
           <div>
             <div className="sideMenuTitle">Menu</div>
             <div className="sideMenuSub">
-              {isDriver ? "Your payouts and bank details" : "Fleet funding, payouts, and support tools"}
+              {isDriver
+                ? "Your payouts and bank details"
+                : isOperator
+                  ? "Operational sync and payout tools"
+                  : isOwnerAdmin
+                    ? "Fleet funding, payouts, and support tools"
+                    : isPlatformAdmin
+                      ? "Internal company reporting"
+                      : "Navigation"}
             </div>
           </div>
           <button className="sideMenuClose" type="button" aria-label="Close menu" onClick={() => setMenuOpen(false)}>
@@ -105,6 +119,40 @@ export default function AppShell({ children }: PropsWithChildren) {
             </NavLink>
           ))}
         </nav>
+
+        {isOwnerAdmin ? (
+          <div className="sideMenuSection">
+            <div className="sideMenuSectionLabel">Internal tools</div>
+            <nav className="sideMenuNav" aria-label="Internal tools navigation">
+              {ADMIN_OWNER_MENU_ITEMS.map((item) => (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  className={({ isActive }) => `sideMenuLink sideMenuLinkSecondary ${isActive ? "sideMenuLinkActive" : ""}`}
+                >
+                  {item.label}
+                </NavLink>
+              ))}
+            </nav>
+          </div>
+        ) : null}
+
+        {isPlatformAdmin ? (
+          <div className="sideMenuSection">
+            <div className="sideMenuSectionLabel">Platform</div>
+            <nav className="sideMenuNav" aria-label="Platform navigation">
+              {PLATFORM_MENU_ITEMS.map((item) => (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  className={({ isActive }) => `sideMenuLink sideMenuLinkSecondary ${isActive ? "sideMenuLinkActive" : ""}`}
+                >
+                  {item.label}
+                </NavLink>
+              ))}
+            </nav>
+          </div>
+        ) : null}
 
         <button className="btn btnGhost sideMenuLogout" type="button" onClick={logout}>
           Log out

@@ -45,3 +45,7 @@ def meets_min_role(*, binding, minimum_role):
     if binding is None:
         return False
     return ROLE_RANK.get(binding.role, 0) >= ROLE_RANK.get(minimum_role, 999)
+
+
+def is_platform_admin(*, user):
+    return bool(user and user.is_authenticated and user.is_staff)

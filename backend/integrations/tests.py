@@ -15,6 +15,8 @@ from ledger.models import LedgerAccount, LedgerEntry
 from ledger.services import (
     create_ledger_entry,
     get_account_balance,
+    get_or_create_driver_available_account,
+    get_or_create_fleet_reserve_account,
     get_or_create_payout_clearing_account,
     get_or_create_platform_fee_account,
     get_or_create_treasury_account,
@@ -191,6 +193,165 @@ class IntegrationRoleAuthorizationTests(APITestCase):
             HTTP_X_FLEET_NAME=self.fleet.name,
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_platform_admin_can_access_platform_only_summary_without_fleet_binding(self):
+        self.unbound_user.is_staff = True
+        self.unbound_user.save(update_fields=["is_staff"])
+        self.client.force_authenticate(self.unbound_user)
+
+        response = self.client.get(reverse("platform-finance-summary"))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("platform_fee_balance", response.data)
+
+    def test_fleet_roles_cannot_access_platform_only_summary(self):
+        for user in [self.owner]:
+            self.client.force_authenticate(user)
+            response = self.client.get(reverse("platform-finance-summary"), HTTP_X_FLEET_NAME=self.fleet.name)
+            self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+        operator = User.objects.create_user(username="integrations_operator", password="pass1234")
+        driver = User.objects.create_user(username="integrations_driver", password="pass1234")
+        FleetPhoneBinding.objects.create(
+            fleet=self.fleet,
+            user=operator,
+            phone_number="598700097",
+            role=FleetPhoneBinding.Role.OPERATOR,
+            is_active=True,
+        )
+        FleetPhoneBinding.objects.create(
+            fleet=self.fleet,
+            user=driver,
+            phone_number="598700096",
+            role=FleetPhoneBinding.Role.DRIVER,
+            is_active=True,
+        )
+
+        for user in [operator, driver]:
+            self.client.force_authenticate(user)
+            response = self.client.get(reverse("platform-finance-summary"), HTTP_X_FLEET_NAME=self.fleet.name)
+            self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_platform_admin_access_does_not_replace_fleet_role_checks(self):
+        self.unbound_user.is_staff = True
+        self.unbound_user.save(update_fields=["is_staff"])
+        self.client.force_authenticate(self.unbound_user)
+
+        response = self.client.get(reverse("reconciliation-summary"), HTTP_X_FLEET_NAME=self.fleet.name)
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class PlatformEarningsApiTests(APITestCase):
+    def setUp(self):
+        self.platform_admin = User.objects.create_user(username="platform_admin_user", password="pass1234", is_staff=True)
+        self.owner = User.objects.create_user(username="platform_owner_user", password="pass1234")
+        self.driver = User.objects.create_user(username="platform_driver_user", password="pass1234")
+        self.fleet = Fleet.objects.create(name="Platform Earnings Fleet")
+        self.other_fleet = Fleet.objects.create(name="Platform Earnings Other Fleet")
+        FleetPhoneBinding.objects.create(
+            fleet=self.fleet,
+            user=self.owner,
+            phone_number="598711111",
+            role=FleetPhoneBinding.Role.OWNER,
+            is_active=True,
+        )
+        FleetPhoneBinding.objects.create(
+            fleet=self.fleet,
+            user=self.driver,
+            phone_number="598711112",
+            role=FleetPhoneBinding.Role.DRIVER,
+            is_active=True,
+        )
+
+    def test_platform_admin_can_fetch_platform_earnings_totals(self):
+        fee_account = get_or_create_platform_fee_account()
+        fleet_withdrawal = WithdrawalRequest.objects.create(
+            user=self.driver,
+            wallet=Wallet.objects.get_or_create(user=self.driver)[0],
+            fleet=self.fleet,
+            bank_account=BankAccount.objects.create(
+                user=self.driver,
+                bank_name="Bank of Georgia",
+                account_number="GE64BG00000000004001",
+                beneficiary_name="Platform Driver",
+                beneficiary_inn="01010101010",
+            ),
+            amount=Decimal("25.00"),
+            fee_amount=Decimal("2.00"),
+            currency="GEL",
+            status=WithdrawalRequest.Status.PROCESSING,
+        )
+        other_driver = User.objects.create_user(username="platform_other_driver", password="pass1234")
+        FleetPhoneBinding.objects.create(
+            fleet=self.other_fleet,
+            user=other_driver,
+            phone_number="598711113",
+            role=FleetPhoneBinding.Role.DRIVER,
+            is_active=True,
+        )
+        other_withdrawal = WithdrawalRequest.objects.create(
+            user=other_driver,
+            wallet=Wallet.objects.get_or_create(user=other_driver)[0],
+            fleet=self.other_fleet,
+            bank_account=BankAccount.objects.create(
+                user=other_driver,
+                bank_name="TBC Bank",
+                account_number="GE64TB00000000004002",
+                beneficiary_name="Other Platform Driver",
+                beneficiary_inn="02020202020",
+            ),
+            amount=Decimal("30.00"),
+            fee_amount=Decimal("3.00"),
+            currency="GEL",
+            status=WithdrawalRequest.Status.PROCESSING,
+        )
+        create_ledger_entry(
+            account=fee_account,
+            amount=Decimal("2.00"),
+            entry_type="withdrawal_platform_fee_credit",
+            created_by=self.owner,
+            currency="GEL",
+            reference_type="withdrawal",
+            reference_id=str(fleet_withdrawal.id),
+        )
+        create_ledger_entry(
+            account=fee_account,
+            amount=Decimal("3.00"),
+            entry_type="withdrawal_platform_fee_credit",
+            created_by=self.owner,
+            currency="GEL",
+            reference_type="withdrawal",
+            reference_id=str(other_withdrawal.id),
+        )
+        create_ledger_entry(
+            account=fee_account,
+            amount=Decimal("-1.00"),
+            entry_type="withdrawal_platform_fee_reversal",
+            created_by=self.owner,
+            currency="GEL",
+            reference_type="withdrawal",
+            reference_id=str(other_withdrawal.id),
+        )
+
+        self.client.force_authenticate(self.platform_admin)
+        response = self.client.get(reverse("platform-earnings"))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["total_fees_earned"], "4.00")
+        self.assertEqual(response.data["recent_totals"]["last_7_days"], "4.00")
+        self.assertEqual(response.data["recent_totals"]["last_30_days"], "4.00")
+        by_fleet = {item["fleet_id"]: item for item in response.data["fees_by_fleet"]}
+        self.assertEqual(by_fleet[self.fleet.id]["fleet_name"], self.fleet.name)
+        self.assertEqual(by_fleet[self.fleet.id]["total_fees_earned"], "2.00")
+        self.assertEqual(by_fleet[self.other_fleet.id]["fleet_name"], self.other_fleet.name)
+        self.assertEqual(by_fleet[self.other_fleet.id]["total_fees_earned"], "2.00")
+
+    def test_fleet_users_cannot_access_platform_earnings(self):
+        for user, role_user in [(self.owner, self.owner), (self.driver, self.driver)]:
+            self.client.force_authenticate(role_user)
+            response = self.client.get(reverse("platform-earnings"), HTTP_X_FLEET_NAME=self.fleet.name)
+            self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
 
 class YandexDriverBalanceImportTests(APITestCase):
@@ -781,6 +942,282 @@ class BankSimulatorApiTests(APITestCase):
         self.assertEqual(response.data["bank_simulator"]["count"], 0)
 
 
+class FleetScopedBankSimulatorPayoutApiTests(APITestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(username="fleet_banksim_owner", password="pass1234")
+        self.operator = User.objects.create_user(username="fleet_banksim_operator", password="pass1234")
+        self.driver = User.objects.create_user(username="fleet_banksim_driver", password="pass1234")
+        self.fleet = Fleet.objects.create(name="Fleet Scoped Bank Sim")
+        for user, role, phone in [
+            (self.owner, FleetPhoneBinding.Role.OWNER, "598988800"),
+            (self.operator, FleetPhoneBinding.Role.OPERATOR, "598988801"),
+            (self.driver, FleetPhoneBinding.Role.DRIVER, "598988802"),
+        ]:
+            FleetPhoneBinding.objects.create(
+                fleet=self.fleet,
+                user=user,
+                phone_number=phone,
+                role=role,
+                is_active=True,
+            )
+
+        DriverFleetMembership.objects.create(
+            user=self.driver,
+            fleet=self.fleet,
+            yandex_external_driver_id="banksim-driver-1",
+            is_active=True,
+        )
+
+        self.other_owner = User.objects.create_user(username="fleet_banksim_other_owner", password="pass1234")
+        self.other_driver = User.objects.create_user(username="fleet_banksim_other_driver", password="pass1234")
+        self.other_fleet = Fleet.objects.create(name="Fleet Scoped Bank Sim Other")
+        FleetPhoneBinding.objects.create(
+            fleet=self.other_fleet,
+            user=self.other_owner,
+            phone_number="598988803",
+            role=FleetPhoneBinding.Role.OWNER,
+            is_active=True,
+        )
+        FleetPhoneBinding.objects.create(
+            fleet=self.other_fleet,
+            user=self.other_driver,
+            phone_number="598988804",
+            role=FleetPhoneBinding.Role.DRIVER,
+            is_active=True,
+        )
+        DriverFleetMembership.objects.create(
+            user=self.other_driver,
+            fleet=self.other_fleet,
+            yandex_external_driver_id="banksim-driver-2",
+            is_active=True,
+        )
+
+        self.driver_bank = BankAccount.objects.create(
+            user=self.driver,
+            bank_name="Bank of Georgia",
+            account_number="GE64BG00000000004001",
+            beneficiary_name="Fleet Bank Sim Driver",
+            beneficiary_inn="01010101010",
+        )
+        self.other_driver_bank = BankAccount.objects.create(
+            user=self.other_driver,
+            bank_name="TBC Bank",
+            account_number="GE64TB00000000004002",
+            beneficiary_name="Other Fleet Bank Sim Driver",
+            beneficiary_inn="02020202020",
+        )
+
+        record_fleet_reserve_deposit(fleet=self.fleet, amount=Decimal("200.00"), created_by=self.owner)
+        record_driver_earning_allocation(
+            user=self.driver,
+            fleet=self.fleet,
+            amount=Decimal("120.00"),
+            created_by=self.owner,
+        )
+        record_fleet_reserve_deposit(fleet=self.other_fleet, amount=Decimal("200.00"), created_by=self.other_owner)
+        record_driver_earning_allocation(
+            user=self.other_driver,
+            fleet=self.other_fleet,
+            amount=Decimal("120.00"),
+            created_by=self.other_owner,
+        )
+
+    def _create_withdrawal(self, *, driver, bank_account, fleet_name, amount, key_suffix):
+        self.client.force_authenticate(driver)
+        response = self.client.post(
+            reverse("withdrawal-create"),
+            data={"bank_account_id": bank_account.id, "amount": amount, "note": "fleet bank sim payout"},
+            format="json",
+            HTTP_X_FLEET_NAME=fleet_name,
+            HTTP_IDEMPOTENCY_KEY=f"fleet-banksim-{key_suffix}",
+            HTTP_X_REQUEST_ID=f"req-fleet-banksim-{key_suffix}",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        return WithdrawalRequest.objects.get(id=response.data["id"])
+
+    def test_operator_can_submit_and_settle_fleet_bank_sim_payout(self):
+        withdrawal = self._create_withdrawal(
+            driver=self.driver,
+            bank_account=self.driver_bank,
+            fleet_name=self.fleet.name,
+            amount="25.00",
+            key_suffix="own",
+        )
+        self.client.force_authenticate(self.operator)
+
+        connect_response = self.client.post(
+            reverse("bank-sim-connect"),
+            data={},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+        self.assertEqual(connect_response.status_code, status.HTTP_201_CREATED)
+
+        submit_response = self.client.post(
+            reverse("bank-sim-submit"),
+            data={"withdrawal_id": withdrawal.id},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+        self.assertIn(submit_response.status_code, [status.HTTP_201_CREATED, status.HTTP_200_OK])
+        payout_id = submit_response.data["id"]
+        self.assertEqual(submit_response.data["withdrawal_id"], withdrawal.id)
+
+        settle_response = self.client.post(
+            reverse("bank-sim-status-update", kwargs={"payout_id": payout_id}),
+            data={"status": "settled"},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+        self.assertEqual(settle_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(settle_response.data["status"], "settled")
+
+        withdrawal.refresh_from_db()
+        self.assertEqual(withdrawal.status, WithdrawalRequest.Status.COMPLETED)
+
+    def test_operator_can_list_only_active_fleet_bank_sim_payouts(self):
+        own_withdrawal = self._create_withdrawal(
+            driver=self.driver,
+            bank_account=self.driver_bank,
+            fleet_name=self.fleet.name,
+            amount="20.00",
+            key_suffix="list-own",
+        )
+        other_withdrawal = self._create_withdrawal(
+            driver=self.other_driver,
+            bank_account=self.other_driver_bank,
+            fleet_name=self.other_fleet.name,
+            amount="22.00",
+            key_suffix="list-other",
+        )
+
+        self.client.force_authenticate(self.operator)
+        self.client.post(reverse("bank-sim-connect"), data={}, format="json", HTTP_X_FLEET_NAME=self.fleet.name)
+        own_submit = self.client.post(
+            reverse("bank-sim-submit"),
+            data={"withdrawal_id": own_withdrawal.id},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+
+        self.client.force_authenticate(self.other_owner)
+        self.client.post(reverse("bank-sim-connect"), data={}, format="json", HTTP_X_FLEET_NAME=self.other_fleet.name)
+        self.client.post(
+            reverse("bank-sim-submit"),
+            data={"withdrawal_id": other_withdrawal.id},
+            format="json",
+            HTTP_X_FLEET_NAME=self.other_fleet.name,
+        )
+
+        self.client.force_authenticate(self.operator)
+        response = self.client.get(reverse("bank-sim-payouts"), HTTP_X_FLEET_NAME=self.fleet.name)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([item["id"] for item in response.data], [own_submit.data["id"]])
+
+    def test_operator_cannot_act_on_another_fleets_bank_sim_items(self):
+        own_withdrawal = self._create_withdrawal(
+            driver=self.driver,
+            bank_account=self.driver_bank,
+            fleet_name=self.fleet.name,
+            amount="18.00",
+            key_suffix="cross-own",
+        )
+        other_withdrawal = self._create_withdrawal(
+            driver=self.other_driver,
+            bank_account=self.other_driver_bank,
+            fleet_name=self.other_fleet.name,
+            amount="19.00",
+            key_suffix="cross-other",
+        )
+
+        self.client.force_authenticate(self.other_owner)
+        self.client.post(reverse("bank-sim-connect"), data={}, format="json", HTTP_X_FLEET_NAME=self.other_fleet.name)
+        other_submit = self.client.post(
+            reverse("bank-sim-submit"),
+            data={"withdrawal_id": other_withdrawal.id},
+            format="json",
+            HTTP_X_FLEET_NAME=self.other_fleet.name,
+        )
+        self.assertIn(other_submit.status_code, [status.HTTP_201_CREATED, status.HTTP_200_OK])
+
+        self.client.force_authenticate(self.operator)
+        self.client.post(reverse("bank-sim-connect"), data={}, format="json", HTTP_X_FLEET_NAME=self.fleet.name)
+
+        submit_response = self.client.post(
+            reverse("bank-sim-submit"),
+            data={"withdrawal_id": other_withdrawal.id},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+        self.assertEqual(submit_response.status_code, status.HTTP_404_NOT_FOUND)
+
+        status_response = self.client.post(
+            reverse("bank-sim-status-update", kwargs={"payout_id": other_submit.data["id"]}),
+            data={"status": "settled"},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+        self.assertEqual(status_response.status_code, status.HTTP_404_NOT_FOUND)
+
+        own_submit = self.client.post(
+            reverse("bank-sim-submit"),
+            data={"withdrawal_id": own_withdrawal.id},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+        self.assertIn(own_submit.status_code, [status.HTTP_201_CREATED, status.HTTP_200_OK])
+
+    def test_driver_cannot_access_operator_bank_sim_tooling(self):
+        withdrawal = self._create_withdrawal(
+            driver=self.driver,
+            bank_account=self.driver_bank,
+            fleet_name=self.fleet.name,
+            amount="16.00",
+            key_suffix="driver-access",
+        )
+        payout = BankSimulatorPayout.objects.create(
+            connection=ProviderConnection.objects.create(
+                user=self.owner,
+                provider=ProviderConnection.Provider.BANK_SIMULATOR,
+                external_account_id="fleet-banksim-owner-conn",
+                status="active",
+                config={"mode": "simulator"},
+            ),
+            withdrawal=withdrawal,
+            provider_payout_id="fleet-banksim-existing",
+            status=BankSimulatorPayout.Status.ACCEPTED,
+            metadata={"source": "bank_simulator"},
+        )
+
+        self.client.force_authenticate(self.driver)
+
+        connect_response = self.client.post(
+            reverse("bank-sim-connect"),
+            data={},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+        list_response = self.client.get(reverse("bank-sim-payouts"), HTTP_X_FLEET_NAME=self.fleet.name)
+        submit_response = self.client.post(
+            reverse("bank-sim-submit"),
+            data={"withdrawal_id": withdrawal.id},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+        status_response = self.client.post(
+            reverse("bank-sim-status-update", kwargs={"payout_id": payout.id}),
+            data={"status": "settled"},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+
+        self.assertEqual(connect_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(list_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(submit_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(status_response.status_code, status.HTTP_403_FORBIDDEN)
+
+
 class DriverWithdrawalPayoutFlowTests(APITestCase):
     def setUp(self):
         self.owner = User.objects.create_user(username="driver_payout_owner", password="pass1234")
@@ -840,7 +1277,13 @@ class DriverWithdrawalPayoutFlowTests(APITestCase):
 
     def test_failed_payout_reversal_restores_driver_and_fleet_balances(self):
         withdrawal = self._create_withdrawal(amount="20.00")
-        submit_response = self.client.post(reverse("bank-sim-submit"), data={"withdrawal_id": withdrawal.id}, format="json")
+        self.client.force_authenticate(self.owner)
+        submit_response = self.client.post(
+            reverse("bank-sim-submit"),
+            data={"withdrawal_id": withdrawal.id},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
         self.assertIn(submit_response.status_code, [status.HTTP_201_CREATED, status.HTTP_200_OK])
         payout_id = submit_response.data["id"]
 
@@ -848,6 +1291,7 @@ class DriverWithdrawalPayoutFlowTests(APITestCase):
             reverse("bank-sim-status-update", kwargs={"payout_id": payout_id}),
             data={"status": "failed", "failure_reason": "invalid account"},
             format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
         )
         self.assertEqual(fail_response.status_code, status.HTTP_200_OK)
 
@@ -1759,6 +2203,53 @@ class IntegrationBackgroundJobCommandTests(APITestCase):
         self.assertEqual(mocked_payouts.call_count, 1)
         self.assertEqual(mocked_payouts.call_args.kwargs["connection"].user_id, self.owner.id)
 
+    @patch("integrations.management.commands.run_money_smoke_sync.run_bog_payout_status_sync_jobs")
+    @patch("integrations.management.commands.run_money_smoke_sync.run_yandex_sync_jobs")
+    @patch("integrations.management.commands.run_money_smoke_sync.run_bog_deposit_sync_jobs")
+    def test_run_money_smoke_sync_runs_fleet_sequence(self, mocked_deposits, mocked_yandex, mocked_payouts):
+        mocked_deposits.return_value = {
+            "checked_connections": 1,
+            "checked_count": 2,
+            "matched_count": 1,
+            "credited_count": 1,
+            "unmatched_count": 1,
+            "credited_total": "15.00",
+        }
+        mocked_yandex.return_value = {
+            "checked_connections": 1,
+            "ok_connections": 1,
+            "error_count": 0,
+            "imported_count": 1,
+            "imported_total": "8.50",
+        }
+        mocked_payouts.return_value = {
+            "checked_connections": 1,
+            "checked_count": 1,
+            "updated_count": 1,
+            "payout_error_count": 0,
+        }
+
+        stdout = StringIO()
+        call_command("run_money_smoke_sync", "--fleet-name", self.fleet.name, stdout=stdout)
+
+        self.assertEqual(mocked_deposits.call_args.kwargs["fleet_name"], self.fleet.name)
+        self.assertEqual(mocked_yandex.call_args.kwargs["fleet_name"], self.fleet.name)
+        self.assertEqual(mocked_payouts.call_args.kwargs["fleet_name"], self.fleet.name)
+        self.assertIn("1. BoG deposits:", stdout.getvalue())
+        self.assertIn("2. Yandex earnings:", stdout.getvalue())
+        self.assertIn("3. BoG payouts:", stdout.getvalue())
+
+    def test_run_money_smoke_sync_requires_one_enabled_step(self):
+        with self.assertRaisesMessage(Exception, "At least one sync step must be enabled."):
+            call_command(
+                "run_money_smoke_sync",
+                "--fleet-name",
+                self.fleet.name,
+                "--skip-deposits",
+                "--skip-yandex",
+                "--skip-payouts",
+            )
+
 
 class BogCardPaymentsApiTests(APITestCase):
     def setUp(self):
@@ -1868,18 +2359,51 @@ class BogPayoutApiTests(APITestCase):
             role=FleetPhoneBinding.Role.ADMIN,
             is_active=True,
         )
-        self.wallet, _ = Wallet.objects.get_or_create(user=self.user)
-        self.wallet.balance = Decimal("150.00")
-        self.wallet.save(update_fields=["balance"])
-        self.bank_account = BankAccount.objects.create(
+        self.driver = User.objects.create_user(username="bog_payout_driver", password="pass1234")
+        FleetPhoneBinding.objects.create(
+            fleet=self.fleet,
+            user=self.driver,
+            phone_number="598950002",
+            role=FleetPhoneBinding.Role.DRIVER,
+            is_active=True,
+        )
+        DriverFleetMembership.objects.create(
+            user=self.driver,
+            fleet=self.fleet,
+            yandex_external_driver_id="bog-driver-1",
+            is_active=True,
+        )
+        ProviderConnection.objects.create(
             user=self.user,
+            provider=ProviderConnection.Provider.BANK_OF_GEORGIA,
+            external_account_id="bog-payout-admin-conn",
+            status="active",
+            config={"mode": "live"},
+        )
+        self.driver_wallet, _ = Wallet.objects.get_or_create(user=self.driver)
+        self.driver_wallet.balance = Decimal("150.00")
+        self.driver_wallet.save(update_fields=["balance"])
+        self.bank_account = BankAccount.objects.create(
+            user=self.driver,
             bank_name="Bank of Georgia",
             account_number="GE64BG00000000000002",
             beneficiary_name="Nika Beridze",
             beneficiary_inn="01001010101",
         )
+        record_fleet_reserve_deposit(
+            fleet=self.fleet,
+            amount=Decimal("200.00"),
+            created_by=self.user,
+        )
+        record_driver_earning_allocation(
+            user=self.driver,
+            fleet=self.fleet,
+            amount=Decimal("150.00"),
+            created_by=self.user,
+        )
 
     def _create_withdrawal(self, amount="25.00"):
+        self.client.force_authenticate(self.driver)
         response = self.client.post(
             reverse("withdrawal-create"),
             data={"bank_account_id": self.bank_account.id, "amount": amount, "note": "bog payout"},
@@ -1888,6 +2412,7 @@ class BogPayoutApiTests(APITestCase):
             HTTP_IDEMPOTENCY_KEY=f"withdrawal-bog-{amount}",
             HTTP_X_REQUEST_ID=f"req-bog-{amount}",
         )
+        self.client.force_authenticate(self.user)
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         return WithdrawalRequest.objects.get(id=response.data["id"])
 
@@ -1953,8 +2478,10 @@ class BogPayoutApiTests(APITestCase):
         self.assertEqual(status_response.data["status"], "failed")
         withdrawal.refresh_from_db()
         self.assertEqual(withdrawal.status, WithdrawalRequest.Status.FAILED)
-        self.wallet.refresh_from_db()
-        self.assertEqual(self.wallet.balance, Decimal("150.00"))
+        driver_account = get_or_create_driver_available_account(self.driver, fleet=self.fleet, currency="GEL")
+        fleet_reserve_account = get_or_create_fleet_reserve_account(self.fleet, currency="GEL")
+        self.assertEqual(get_account_balance(driver_account), Decimal("150.00"))
+        self.assertEqual(get_account_balance(fleet_reserve_account), Decimal("200.00"))
 
     @patch("integrations.services._bog_request")
     @patch("integrations.services._bog_missing_payout_env_vars")
@@ -1995,6 +2522,302 @@ class BogPayoutApiTests(APITestCase):
 
         withdrawal.refresh_from_db()
         self.assertEqual(withdrawal.status, WithdrawalRequest.Status.COMPLETED)
+
+
+class FleetScopedBogPayoutApiTests(APITestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(username="fleet_bog_owner", password="pass1234")
+        self.operator = User.objects.create_user(username="fleet_bog_operator", password="pass1234")
+        self.driver = User.objects.create_user(username="fleet_bog_driver", password="pass1234")
+        self.fleet = Fleet.objects.create(name="Fleet Scoped BoG")
+        for user, role, phone in [
+            (self.owner, FleetPhoneBinding.Role.OWNER, "598977700"),
+            (self.operator, FleetPhoneBinding.Role.OPERATOR, "598977701"),
+            (self.driver, FleetPhoneBinding.Role.DRIVER, "598977702"),
+        ]:
+            FleetPhoneBinding.objects.create(
+                fleet=self.fleet,
+                user=user,
+                phone_number=phone,
+                role=role,
+                is_active=True,
+            )
+
+        self.other_owner = User.objects.create_user(username="fleet_bog_other_owner", password="pass1234")
+        self.other_driver = User.objects.create_user(username="fleet_bog_other_driver", password="pass1234")
+        self.other_fleet = Fleet.objects.create(name="Fleet Scoped Other")
+        FleetPhoneBinding.objects.create(
+            fleet=self.other_fleet,
+            user=self.other_owner,
+            phone_number="598977703",
+            role=FleetPhoneBinding.Role.OWNER,
+            is_active=True,
+        )
+        FleetPhoneBinding.objects.create(
+            fleet=self.other_fleet,
+            user=self.other_driver,
+            phone_number="598977704",
+            role=FleetPhoneBinding.Role.DRIVER,
+            is_active=True,
+        )
+
+        self.owner_connection = ProviderConnection.objects.create(
+            user=self.owner,
+            provider=ProviderConnection.Provider.BANK_OF_GEORGIA,
+            external_account_id="fleet-bog-owner-conn",
+            status="active",
+            config={"mode": "live"},
+        )
+        self.other_owner_connection = ProviderConnection.objects.create(
+            user=self.other_owner,
+            provider=ProviderConnection.Provider.BANK_OF_GEORGIA,
+            external_account_id="fleet-bog-other-conn",
+            status="active",
+            config={"mode": "live"},
+        )
+
+        self.driver_wallet, _ = Wallet.objects.get_or_create(user=self.driver)
+        self.driver_wallet.balance = Decimal("120.00")
+        self.driver_wallet.save(update_fields=["balance"])
+        self.driver_bank = BankAccount.objects.create(
+            user=self.driver,
+            bank_name="Bank of Georgia",
+            account_number="GE64BG00000000003001",
+            beneficiary_name="Fleet Driver",
+            beneficiary_inn="01010101010",
+        )
+        self.fleet_withdrawal = WithdrawalRequest.objects.create(
+            user=self.driver,
+            wallet=self.driver_wallet,
+            fleet=self.fleet,
+            bank_account=self.driver_bank,
+            amount=Decimal("25.00"),
+            fee_amount=Decimal("2.00"),
+            currency="GEL",
+            status=WithdrawalRequest.Status.PENDING,
+        )
+
+        self.other_driver_wallet, _ = Wallet.objects.get_or_create(user=self.other_driver)
+        self.other_driver_wallet.balance = Decimal("120.00")
+        self.other_driver_wallet.save(update_fields=["balance"])
+        self.other_bank = BankAccount.objects.create(
+            user=self.other_driver,
+            bank_name="TBC Bank",
+            account_number="GE64TB00000000003002",
+            beneficiary_name="Other Fleet Driver",
+            beneficiary_inn="02020202020",
+        )
+        self.other_withdrawal = WithdrawalRequest.objects.create(
+            user=self.other_driver,
+            wallet=self.other_driver_wallet,
+            fleet=self.other_fleet,
+            bank_account=self.other_bank,
+            amount=Decimal("30.00"),
+            fee_amount=Decimal("2.00"),
+            currency="GEL",
+            status=WithdrawalRequest.Status.PENDING,
+        )
+
+    @patch("integrations.services._bog_request")
+    @patch("integrations.services._bog_missing_payout_env_vars")
+    def test_operator_can_submit_fleet_withdrawal_with_owner_connection(self, mocked_missing, mocked_request):
+        mocked_missing.return_value = []
+        mocked_request.return_value = {
+            "ok": True,
+            "http_status": 200,
+            "body": [{"UniqueKey": 777111, "ResultCode": 0, "Match": 1}],
+        }
+        self.client.force_authenticate(self.operator)
+
+        response = self.client.post(
+            reverse("bog-submit"),
+            data={"withdrawal_id": self.fleet_withdrawal.id},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["status"], "processing")
+        payout = BogPayout.objects.get(id=response.data["id"])
+        self.assertEqual(payout.connection_id, self.owner_connection.id)
+        self.fleet_withdrawal.refresh_from_db()
+        self.assertEqual(self.fleet_withdrawal.status, WithdrawalRequest.Status.PROCESSING)
+
+    @patch("integrations.services._bog_request")
+    @patch("integrations.services._bog_missing_payout_env_vars")
+    def test_operator_can_submit_driver_created_withdrawal_in_same_fleet(self, mocked_missing, mocked_request):
+        mocked_missing.return_value = []
+        mocked_request.return_value = {
+            "ok": True,
+            "http_status": 200,
+            "body": [{"UniqueKey": 777119, "ResultCode": 0, "Match": 1}],
+        }
+
+        DriverFleetMembership.objects.create(
+            user=self.driver,
+            fleet=self.fleet,
+            yandex_external_driver_id="fleet-bog-driver-mapped",
+            is_active=True,
+        )
+        record_fleet_reserve_deposit(
+            fleet=self.fleet,
+            amount=Decimal("100.00"),
+            created_by=self.owner,
+        )
+        record_driver_earning_allocation(
+            user=self.driver,
+            fleet=self.fleet,
+            amount=Decimal("40.00"),
+            created_by=self.owner,
+        )
+
+        self.client.force_authenticate(self.driver)
+        create_response = self.client.post(
+            reverse("withdrawal-create"),
+            data={"bank_account_id": self.driver_bank.id, "amount": "18.00", "note": "driver created payout"},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+            HTTP_IDEMPOTENCY_KEY="fleet-bog-driver-created",
+            HTTP_X_REQUEST_ID="req-fleet-bog-driver-created",
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        created_withdrawal_id = create_response.data["id"]
+
+        self.client.force_authenticate(self.operator)
+        list_response = self.client.get(reverse("withdrawal-list"), HTTP_X_FLEET_NAME=self.fleet.name)
+        self.assertEqual(list_response.status_code, status.HTTP_200_OK)
+        self.assertIn(created_withdrawal_id, {item["id"] for item in list_response.data})
+
+        submit_response = self.client.post(
+            reverse("bog-submit"),
+            data={"withdrawal_id": created_withdrawal_id},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+
+        self.assertEqual(submit_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(submit_response.data["status"], "processing")
+        payout = BogPayout.objects.get(id=submit_response.data["id"])
+        self.assertEqual(payout.connection_id, self.owner_connection.id)
+        created_withdrawal = WithdrawalRequest.objects.get(id=created_withdrawal_id)
+        self.assertEqual(created_withdrawal.status, WithdrawalRequest.Status.PROCESSING)
+
+    @patch("integrations.services._bog_request")
+    @patch("integrations.services._bog_missing_payout_env_vars")
+    def test_operator_can_refresh_fleet_payout_statuses(self, mocked_missing, mocked_request):
+        mocked_missing.return_value = []
+        mocked_request.side_effect = [
+            {
+                "ok": True,
+                "http_status": 200,
+                "body": [{"UniqueKey": 777222, "ResultCode": 0, "Match": 1}],
+            },
+            {
+                "ok": True,
+                "http_status": 200,
+                "body": {"Status": "Completed", "ResultCode": 0, "Match": 1},
+            },
+        ]
+        BogPayout.objects.all().delete()
+        self.client.force_authenticate(self.operator)
+        submit_response = self.client.post(
+            reverse("bog-submit"),
+            data={"withdrawal_id": self.fleet_withdrawal.id},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+        payout_id = submit_response.data["id"]
+
+        status_response = self.client.post(
+            reverse("bog-status-sync", kwargs={"payout_id": payout_id}),
+            data={},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+
+        self.assertEqual(status_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(status_response.data["status"], "settled")
+
+    @patch("integrations.views.sync_open_bog_payouts")
+    def test_operator_can_refresh_all_fleet_payout_statuses(self, mocked_sync_all):
+        mocked_sync_all.return_value = {"checked_count": 1, "updated_count": 1, "error_count": 0, "errors": []}
+        self.client.force_authenticate(self.operator)
+
+        response = self.client.post(
+            reverse("bog-sync-all"),
+            data={},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(mocked_sync_all.call_args.kwargs["connection"].id, self.owner_connection.id)
+
+    def test_operator_can_list_fleet_bog_payouts(self):
+        payout = BogPayout.objects.create(
+            connection=self.owner_connection,
+            withdrawal=self.fleet_withdrawal,
+            provider_unique_id="fleet-bog-payout",
+            status="processing",
+        )
+        BogPayout.objects.create(
+            connection=self.other_owner_connection,
+            withdrawal=self.other_withdrawal,
+            provider_unique_id="other-bog-payout",
+            status="processing",
+        )
+        self.client.force_authenticate(self.operator)
+
+        response = self.client.get(reverse("bog-payouts"), HTTP_X_FLEET_NAME=self.fleet.name)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([item["id"] for item in response.data], [payout.id])
+
+    def test_operator_cannot_act_on_another_fleets_withdrawal_or_payout(self):
+        other_payout = BogPayout.objects.create(
+            connection=self.other_owner_connection,
+            withdrawal=self.other_withdrawal,
+            provider_unique_id="other-fleet-status",
+            status="processing",
+        )
+        self.client.force_authenticate(self.operator)
+
+        submit_response = self.client.post(
+            reverse("bog-submit"),
+            data={"withdrawal_id": self.other_withdrawal.id},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+        self.assertEqual(submit_response.status_code, status.HTTP_404_NOT_FOUND)
+
+        status_response = self.client.post(
+            reverse("bog-status-sync", kwargs={"payout_id": other_payout.id}),
+            data={},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+        self.assertEqual(status_response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_driver_cannot_access_owner_operator_bog_payout_tooling(self):
+        self.client.force_authenticate(self.driver)
+
+        list_response = self.client.get(reverse("bog-payouts"), HTTP_X_FLEET_NAME=self.fleet.name)
+        submit_response = self.client.post(
+            reverse("bog-submit"),
+            data={"withdrawal_id": self.fleet_withdrawal.id},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+        sync_all_response = self.client.post(
+            reverse("bog-sync-all"),
+            data={},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+
+        self.assertEqual(list_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(submit_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(sync_all_response.status_code, status.HTTP_403_FORBIDDEN)
 
 
 class YandexLiveSyncServiceTests(APITestCase):
@@ -2133,6 +2956,8 @@ class BogDepositSyncServiceTests(APITestCase):
         self.assertEqual(get_account_balance(reserve_account), Decimal("45.50"))
         treasury_account = LedgerAccount.objects.get(account_type=LedgerAccount.AccountType.TREASURY)
         self.assertEqual(get_account_balance(treasury_account), Decimal("45.50"))
+        transfer = IncomingBankTransfer.objects.get(provider_transaction_id="1001")
+        self.assertEqual(transfer.raw_payload["_expertpay_sync"]["source"], "activity_poll")
 
     @patch("integrations.services._bog_request")
     def test_sync_bog_deposits_keeps_unmatched_transfers_for_review(self, mocked_request):
@@ -2163,6 +2988,55 @@ class BogDepositSyncServiceTests(APITestCase):
         transfer = IncomingBankTransfer.objects.get(provider_transaction_id="1002")
         self.assertEqual(transfer.match_status, IncomingBankTransfer.MatchStatus.UNMATCHED)
         self.assertIsNone(transfer.fleet_id)
+        self.assertEqual(transfer.raw_payload["_expertpay_sync"]["source"], "activity_poll")
+
+    @patch("integrations.services._bog_request")
+    def test_backfill_sync_recovers_older_transfer_without_double_credit_on_rerun(self, mocked_request):
+        mocked_request.return_value = {
+            "ok": True,
+            "http_status": 200,
+            "body": {
+                "Records": [
+                    {
+                        "DocKey": 2001,
+                        "Credit": "77.25",
+                        "Nomination": f"Recovered EXP-FLT-{self.fleet.id:06d}",
+                        "PayerName": "Recovered Payer",
+                        "PostDate": "2026-03-01",
+                        "ValueDate": "2026-03-01",
+                    }
+                ]
+            },
+        }
+
+        with patch("integrations.services.settings.BOG_SOURCE_ACCOUNT_NUMBER", "GE00BG00000000000001"):
+            first = sync_bog_deposits(
+                connection=self.connection,
+                use_statement=True,
+                start_date="2026-03-01",
+                end_date="2026-03-05",
+            )
+            second = sync_bog_deposits(
+                connection=self.connection,
+                use_statement=True,
+                start_date="2026-03-01",
+                end_date="2026-03-05",
+            )
+
+        self.assertTrue(first["ok"])
+        self.assertEqual(first["sync_source"], "backfill")
+        self.assertEqual(first["credited_count"], 1)
+        self.assertEqual(second["credited_count"], 0)
+        self.assertEqual(Deposit.objects.filter(provider_transaction_id="2001").count(), 1)
+        transfer = IncomingBankTransfer.objects.get(provider_transaction_id="2001")
+        self.assertEqual(str(transfer.booking_date), "2026-03-01")
+        self.assertEqual(transfer.raw_payload["_expertpay_sync"]["source"], "backfill")
+        self.assertEqual(transfer.raw_payload["_expertpay_sync"]["start_date"], "2026-03-01")
+        reserve_account = LedgerAccount.objects.get(
+            fleet=self.fleet,
+            account_type=LedgerAccount.AccountType.FLEET_RESERVE,
+        )
+        self.assertEqual(get_account_balance(reserve_account), Decimal("77.25"))
 
 
 class BogCardOrderServiceTests(APITestCase):
