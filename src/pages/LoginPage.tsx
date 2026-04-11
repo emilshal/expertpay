@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
+import LanguageToggle from "../components/LanguageToggle";
 import { fleets, requestFleetCode, verifyFleetCode, type Fleet } from "../lib/api";
+import { useI18n } from "../lib/i18n";
 
 type Props = {
   onAuthenticated: () => Promise<void>;
 };
 
 export default function LoginPage({ onAuthenticated }: Props) {
+  const { pick } = useI18n();
   const [fleetList, setFleetList] = useState<Fleet[]>([]);
   const [fleetQuery, setFleetQuery] = useState("");
   const [selectedFleetName, setSelectedFleetName] = useState("");
@@ -25,12 +28,28 @@ export default function LoginPage({ onAuthenticated }: Props) {
         const data = await fleets();
         setFleetList(data);
       } catch {
-        setFleetLoadError("Unable to load fleets right now.");
+        setFleetLoadError(pick("Unable to load fleets right now.", "ფლიტების ჩატვირთვა ახლა ვერ მოხერხდა."));
       } finally {
         setFleetLoading(false);
       }
     })();
   }, []);
+
+  useEffect(() => {
+    if (fleetLoading || fleetList.length === 0) return;
+    const fleetParam = new URLSearchParams(window.location.search).get("fleet")?.trim();
+    if (!fleetParam) return;
+    const matchedFleet = fleetList.find((fleet) => fleet.name.toLowerCase() === fleetParam.toLowerCase());
+    if (!matchedFleet) {
+      setFleetQuery(fleetParam);
+      return;
+    }
+    setFleetQuery(matchedFleet.name);
+    setSelectedFleetName(matchedFleet.name);
+    setChallengeId(null);
+    setCode("");
+    setError("");
+  }, [fleetList, fleetLoading]);
 
   const filteredFleets = useMemo(() => {
     const query = fleetQuery.trim().toLowerCase();
@@ -53,11 +72,11 @@ export default function LoginPage({ onAuthenticated }: Props) {
     } catch (err) {
       const message = err instanceof Error ? err.message : "";
       if (message.includes("Wrong number")) {
-        setError("Wrong number for this fleet.");
+        setError(pick("Wrong number for this fleet.", "ამ ფლიტისთვის არასწორი ნომერია."));
       } else if (message.includes("Fleet not found")) {
-        setError("Fleet not found.");
+        setError(pick("Fleet not found.", "ფლიტი ვერ მოიძებნა."));
       } else {
-        setError("Could not send code.");
+        setError(pick("Could not send code.", "კოდის გაგზავნა ვერ მოხერხდა."));
       }
     } finally {
       setLoading(false);
@@ -72,7 +91,7 @@ export default function LoginPage({ onAuthenticated }: Props) {
       await verifyFleetCode({ challenge_id: challengeId, code: code.trim() });
       await onAuthenticated();
     } catch {
-      setError("Invalid or expired code.");
+      setError(pick("Invalid or expired code.", "კოდი არასწორია ან ვადა გაუვიდა."));
     } finally {
       setLoading(false);
     }
@@ -81,23 +100,26 @@ export default function LoginPage({ onAuthenticated }: Props) {
   return (
     <div className="loginPage">
       <section className="card loginCard">
-        <h1 className="loginTitle">Login To Fleet</h1>
+        <div className="loginCardTop">
+          <LanguageToggle />
+        </div>
+        <h1 className="loginTitle">{pick("Login To Fleet", "ფლიტში შესვლა")}</h1>
 
         <div className="transferForm">
           <label className="transferField">
-            <span className="transferLabel">Search fleet</span>
+            <span className="transferLabel">{pick("Search fleet", "ფლიტის ძიება")}</span>
             <input
               className="transferInput"
               type="text"
-              placeholder="Type fleet name"
+              placeholder={pick("Type fleet name", "ჩაწერეთ ფლიტის სახელი")}
               value={fleetQuery}
               onChange={(event) => setFleetQuery(event.target.value)}
             />
           </label>
 
-          <div className="fleetResults" role="listbox" aria-label="Fleet options">
+          <div className="fleetResults" role="listbox" aria-label={pick("Fleet options", "ფლიტის ვარიანტები")}>
             {fleetLoading ? (
-              <p className="statusHint">Loading fleets...</p>
+              <p className="statusHint">{pick("Loading fleets...", "ფლიტები იტვირთება...")}</p>
             ) : fleetLoadError ? (
               <p className="statusError">{fleetLoadError}</p>
             ) : filteredFleets.length ? (
@@ -117,17 +139,17 @@ export default function LoginPage({ onAuthenticated }: Props) {
                 </button>
               ))
             ) : fleetQuery.trim() ? (
-              <p className="statusHint">No fleets found.</p>
+              <p className="statusHint">{pick("No fleets found.", "ფლიტები ვერ მოიძებნა.")}</p>
             ) : (
-              <p className="statusHint">Start typing to search fleets.</p>
+              <p className="statusHint">{pick("Start typing to search fleets.", "ძებნისთვის დაიწყეთ აკრეფა.")}</p>
             )}
           </div>
 
           {selectedFleetName ? (
             <>
-              <p className="statusHint">Selected fleet: {selectedFleetName}</p>
+              <p className="statusHint">{pick("Selected fleet", "არჩეული ფლიტი")}: {selectedFleetName}</p>
               <label className="transferField">
-                <span className="transferLabel">Phone number</span>
+                <span className="transferLabel">{pick("Phone number", "ტელეფონის ნომერი")}</span>
                 <div className="phoneInputWrap">
                   <span className="phonePrefix">+995</span>
                   <input
@@ -149,24 +171,24 @@ export default function LoginPage({ onAuthenticated }: Props) {
 
           {!challengeId && selectedFleetName ? (
             <button className="transferSubmit" type="button" onClick={() => void handleRequestCode()}>
-              {loading ? "Sending..." : "Receive code"}
+              {loading ? pick("Sending...", "იგზავნება...") : pick("Receive code", "კოდის მიღება")}
             </button>
           ) : null}
 
           {challengeId ? (
             <>
               <label className="transferField">
-                <span className="transferLabel">Code</span>
+                <span className="transferLabel">{pick("Code", "კოდი")}</span>
                 <input
                   className="transferInput transferInputAccent"
                   type="text"
-                  placeholder="Enter 6-digit code"
+                  placeholder={pick("Enter 6-digit code", "შეიყვანეთ 6-ნიშნა კოდი")}
                   value={code}
                   onChange={(event) => setCode(event.target.value)}
                 />
               </label>
               <button className="transferSubmit" type="button" onClick={() => void handleVerifyCode()}>
-                {loading ? "Verifying..." : "Login to fleet"}
+                {loading ? pick("Verifying...", "მოწმდება...") : pick("Login to fleet", "ფლიტში შესვლა")}
               </button>
             </>
           ) : null}

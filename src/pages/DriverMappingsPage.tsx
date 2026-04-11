@@ -8,6 +8,7 @@ import {
   type DriverYandexMapping,
   type Fleet
 } from "../lib/api";
+import { useI18n } from "../lib/i18n";
 
 function displayName(mapping: DriverYandexMapping) {
   const fullName = `${mapping.first_name} ${mapping.last_name}`.trim();
@@ -15,6 +16,7 @@ function displayName(mapping: DriverYandexMapping) {
 }
 
 export default function DriverMappingsPage() {
+  const { pick } = useI18n();
   const [fleetList, setFleetList] = useState<Fleet[]>([]);
   const [selectedFleet, setSelectedFleet] = useState(getActiveFleetName() ?? "");
   const [mappings, setMappings] = useState<DriverYandexMapping[]>([]);
@@ -48,9 +50,9 @@ export default function DriverMappingsPage() {
     } catch (err) {
       const text = err instanceof Error ? err.message : "";
       if (text.includes("Only fleet admin/owner")) {
-        setError("Only fleet admin/owner can manage Yandex driver mappings.");
+        setError(pick("Only fleet admin/owner can manage Yandex driver mappings.", "Yandex-ის მიბმების მართვა მხოლოდ ფლიტის ადმინს ან მფლობელს შეუძლია."));
       } else {
-        setError("Unable to load driver mappings.");
+        setError(pick("Unable to load driver mappings.", "მძღოლების მიბმები ვერ ჩაიტვირთა."));
       }
       setMappings([]);
       setDraftIds({});
@@ -69,16 +71,16 @@ export default function DriverMappingsPage() {
         fleet_name: selectedFleet,
         yandex_external_driver_id: (draftIds[mapping.id] ?? "").trim()
       });
-      setMessage(`Updated Yandex mapping for ${displayName(mapping)}.`);
+      setMessage(pick(`Updated Yandex mapping for ${displayName(mapping)}.`, `${displayName(mapping)}-სთვის Yandex-ის მიბმა განახლდა.`));
       await loadMappings();
     } catch (err) {
       const text = err instanceof Error ? err.message : "";
       if (text.includes("already mapped")) {
-        setError("That Yandex external driver ID is already assigned to another driver.");
+        setError(pick("That Yandex external driver ID is already assigned to another driver.", "Yandex-ის ეს გარე მძღოლის ID უკვე სხვა მძღოლზეა მიბმული."));
       } else if (text.includes("another fleet")) {
-        setError("This driver is already financially assigned to another fleet.");
+        setError(pick("This driver is already financially assigned to another fleet.", "ეს მძღოლი უკვე სხვა ფლიტზეა ფინანსურად მიბმული."));
       } else {
-        setError("Could not update Yandex mapping.");
+        setError(pick("Could not update Yandex mapping.", "Yandex-ის მიბმის განახლება ვერ მოხერხდა."));
       }
     } finally {
       setSavingBindingId(null);
@@ -101,14 +103,14 @@ export default function DriverMappingsPage() {
     <section className="card">
       <div className="cardTitleRow">
         <div>
-          <h1>Driver Yandex Mappings</h1>
-          <div className="txSub">Keep Yandex external driver IDs attached to the right drivers before earnings import.</div>
+          <h1>{pick("Driver Yandex Mappings", "მძღოლების Yandex მიბმები")}</h1>
+          <div className="txSub">{pick("Keep Yandex external driver IDs attached to the right drivers before earnings import.", "შემოსავლის იმპორტამდე Yandex-ის გარე მძღოლის ID სწორ მძღოლებზე უნდა იყოს მიბმული.")}</div>
         </div>
       </div>
 
       <div className="transferForm">
         <label className="transferField">
-          <span className="transferLabel">Fleet</span>
+          <span className="transferLabel">{pick("Fleet", "ფლიტი")}</span>
           <span className="transferSelectWrap">
             <select
               className="transferInput"
@@ -118,7 +120,7 @@ export default function DriverMappingsPage() {
                 if (event.target.value) setActiveFleetName(event.target.value);
               }}
             >
-              <option value="">Select fleet</option>
+              <option value="">{pick("Select fleet", "აირჩიეთ ფლიტი")}</option>
               {fleetList.map((fleet) => (
                 <option key={fleet.id} value={fleet.name}>
                   {fleet.name}
@@ -129,18 +131,18 @@ export default function DriverMappingsPage() {
         </label>
 
         <button className="btn btnGhost" type="button" onClick={() => void loadMappings()}>
-          {loading ? "Loading..." : "Refresh Mappings"}
+          {loading ? pick("Loading...", "იტვირთება...") : pick("Refresh Mappings", "მიბმების განახლება")}
         </button>
       </div>
 
       <div className="mappingStats">
         <div className="mappingStat">
           <span className="mappingStatValue">{mappedCount}</span>
-          <span className="mappingStatLabel">Mapped</span>
+          <span className="mappingStatLabel">{pick("Mapped", "მიბმული")}</span>
         </div>
         <div className="mappingStat">
           <span className="mappingStatValue">{unmappedCount}</span>
-          <span className="mappingStatLabel">Unmapped</span>
+          <span className="mappingStatLabel">{pick("Unmapped", "დაუმიბმავი")}</span>
         </div>
       </div>
 
@@ -151,8 +153,8 @@ export default function DriverMappingsPage() {
         {mappings.length === 0 ? (
           <div className="txRow" role="listitem">
             <div className="txMain">
-              <div className="txTitle">No driver mappings loaded</div>
-              <div className="txSub">Select a fleet and refresh to review mapped and unmapped drivers.</div>
+              <div className="txTitle">{pick("No driver mappings loaded", "მძღოლების მიბმები არ ჩაიტვირთა")}</div>
+              <div className="txSub">{pick("Select a fleet and refresh to review mapped and unmapped drivers.", "აირჩიეთ ფლიტი და განაახლეთ, რომ ნახოთ მიბმული და დაუმიბმავი მძღოლები.")}</div>
             </div>
           </div>
         ) : (
@@ -161,20 +163,20 @@ export default function DriverMappingsPage() {
               <div className="txMain">
                 <div className="txTitle">{displayName(mapping)}</div>
                 <div className="txSub">
-                  {mapping.phone_number} | @{mapping.username} | {mapping.is_active ? "active" : "inactive"}
+                  {mapping.phone_number} | @{mapping.username} | {mapping.is_active ? pick("active", "აქტიური") : pick("inactive", "არააქტიური")}
                 </div>
                 <div className={`mappingBadge ${mapping.mapping_conflict ? "mappingBadgeWarn" : mapping.has_mapping ? "mappingBadgeOk" : "mappingBadgePending"}`}>
                   {mapping.mapping_conflict
-                    ? `Conflict with ${mapping.mapping_conflict_fleet_name || "another fleet"}`
+                    ? pick(`Conflict with ${mapping.mapping_conflict_fleet_name || "another fleet"}`, `კონფლიქტი: ${mapping.mapping_conflict_fleet_name || "სხვა ფლიტი"}`)
                     : mapping.has_mapping
-                      ? "Mapped"
-                      : "Unmapped"}
+                      ? pick("Mapped", "მიბმული")
+                      : pick("Unmapped", "დაუმიბმავი")}
                 </div>
               </div>
               <div className="mappingEditor">
                 <input
                   className="transferInput"
-                  placeholder="Yandex external driver ID"
+                  placeholder={pick("Yandex external driver ID", "Yandex-ის გარე მძღოლის ID")}
                   value={draftIds[mapping.id] ?? ""}
                   onChange={(event) =>
                     setDraftIds((prev) => ({
@@ -190,7 +192,7 @@ export default function DriverMappingsPage() {
                   onClick={() => void saveMapping(mapping)}
                   disabled={savingBindingId === mapping.id || mapping.mapping_conflict}
                 >
-                  {savingBindingId === mapping.id ? "Saving..." : "Save"}
+                  {savingBindingId === mapping.id ? pick("Saving...", "ინახება...") : pick("Save", "შენახვა")}
                 </button>
               </div>
             </div>

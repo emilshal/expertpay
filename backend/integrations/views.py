@@ -34,7 +34,9 @@ from .serializers import (
     ExternalEventSerializer,
     LiveYandexSyncSerializer,
     ProviderConnectionSerializer,
+    RequestBogPayoutOtpSerializer,
     SimulateEventsSerializer,
+    SignBogPayoutSerializer,
     SyncBogPayoutStatusSerializer,
     SubmitBankPayoutSerializer,
     UpdateBankPayoutStatusSerializer,
@@ -53,6 +55,8 @@ from .services import (
     live_sync_yandex_data,
     purge_simulated_yandex_data,
     reconciliation_summary,
+    request_bog_payout_otp,
+    sign_bog_payout_document,
     sync_bog_card_order,
     sync_yandex_transaction_categories,
     sync_bog_payout_status,
@@ -531,8 +535,12 @@ class ListBogCardOrdersView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.ADMIN):
+            return Response({"detail": "Only admin/owner can view card top-ups."}, status=403)
+
         connection = _get_or_create_bog_payments_connection(request.user)
-        orders = connection.bog_card_orders.filter(user=request.user).order_by("-created_at")[:100]
+        orders = connection.bog_card_orders.filter(fleet=binding.fleet).order_by("-created_at")[:100]
         return Response(BogCardOrderSerializer(orders, many=True).data, status=status.HTTP_200_OK)
 
 
@@ -541,6 +549,10 @@ class CreateBogCardOrderView(APIView):
     throttle_scope = "money_write"
 
     def post(self, request):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.ADMIN):
+            return Response({"detail": "Only admin/owner can create card top-ups."}, status=403)
+
         serializer = CreateBogCardOrderSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
@@ -549,6 +561,7 @@ class CreateBogCardOrderView(APIView):
             order = create_bog_card_order(
                 connection=connection,
                 user=request.user,
+                fleet=binding.fleet,
                 amount=serializer.validated_data["amount"],
                 currency=serializer.validated_data["currency"],
                 save_card=serializer.validated_data["save_card"],
@@ -565,8 +578,12 @@ class SyncBogCardOrderView(APIView):
     throttle_scope = "money_status_write"
 
     def post(self, request, provider_order_id):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.ADMIN):
+            return Response({"detail": "Only admin/owner can refresh card top-ups."}, status=403)
+
         connection = _get_or_create_bog_payments_connection(request.user)
-        order = connection.bog_card_orders.filter(user=request.user, provider_order_id=provider_order_id).first()
+        order = connection.bog_card_orders.filter(fleet=binding.fleet, provider_order_id=provider_order_id).first()
         if order is None:
             return Response({"detail": "BoG card order not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -648,6 +665,80 @@ class SubmitBogPayoutView(APIView):
 
         payload = BogPayoutSerializer(payout).data
         return Response(payload, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+
+class RequestBogPayoutOtpView(APIView):
+    permission_classes = [IsAuthenticated]
+    throttle_scope = "money_status_write"
+
+    def post(self, request, payout_id):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.OPERATOR):
+            return Response({"detail": "Only operator/admin/owner can request BoG payout OTP."}, status=403)
+
+        serializer = RequestBogPayoutOtpSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        connection = _get_active_fleet_bog_connection(fleet=binding.fleet)
+        if connection is None:
+            return Response({"detail": "Bank of Georgia connection is not configured."}, status=status.HTTP_400_BAD_REQUEST)
+        payout = (
+            BogPayout.objects.select_related("withdrawal")
+            .filter(id=payout_id, connection=connection, withdrawal__fleet=binding.fleet)
+            .first()
+        )
+        if payout is None:
+            return Response({"detail": "BoG payout not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            result = request_bog_payout_otp(payout=payout)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            {
+                "detail": result["detail"],
+                "payout": BogPayoutSerializer(payout).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class SignBogPayoutView(APIView):
+    permission_classes = [IsAuthenticated]
+    throttle_scope = "money_status_write"
+
+    def post(self, request, payout_id):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.OPERATOR):
+            return Response({"detail": "Only operator/admin/owner can sign BoG payouts."}, status=403)
+
+        serializer = SignBogPayoutSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        connection = _get_active_fleet_bog_connection(fleet=binding.fleet)
+        if connection is None:
+            return Response({"detail": "Bank of Georgia connection is not configured."}, status=status.HTTP_400_BAD_REQUEST)
+        payout = (
+            BogPayout.objects.select_related("withdrawal")
+            .filter(id=payout_id, connection=connection, withdrawal__fleet=binding.fleet)
+            .first()
+        )
+        if payout is None:
+            return Response({"detail": "BoG payout not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            payout = sign_bog_payout_document(payout=payout, otp=serializer.validated_data["otp"])
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            {
+                "detail": "BoG payout sign request submitted.",
+                "payout": BogPayoutSerializer(payout).data,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class SyncBogPayoutStatusView(APIView):

@@ -6,8 +6,10 @@ import {
   syncBogCardOrder,
   type BogCardOrder
 } from "../lib/api";
+import { useI18n } from "../lib/i18n";
 
 export default function CardTopupPage() {
+  const { pick } = useI18n();
   const navigate = useNavigate();
   const [amount, setAmount] = useState("25.00");
   const [orders, setOrders] = useState<BogCardOrder[]>([]);
@@ -22,7 +24,7 @@ export default function CardTopupPage() {
       const rows = await bogCardOrders();
       setOrders(rows);
     } catch {
-      setError("Unable to load card top-up orders right now.");
+      setError(pick("Unable to load card top-up orders right now.", "ბარათით შევსების შეკვეთები ახლა ვერ ჩაიტვირთა."));
     } finally {
       setLoading(false);
     }
@@ -38,15 +40,15 @@ export default function CardTopupPage() {
     setMessage("");
     try {
       const order = await createBogCardOrder({ amount, currency: "GEL", save_card: false });
-      setMessage("Secure Bank of Georgia checkout created. Redirecting now...");
+      setMessage(pick("Secure Bank of Georgia checkout created. Redirecting now...", "Bank of Georgia-ს დაცული ჩექაუთი შეიქმნა. ახლა გადამისამართდება..."));
       await loadOrders();
       if (order.redirect_url) {
         window.location.assign(order.redirect_url);
         return;
       }
-      setError("BoG returned an order but no redirect URL.");
+      setError(pick("BoG returned an order but no redirect URL.", "BoG-მა შეკვეთა დააბრუნა, მაგრამ გადამისამართების მისამართი არა."));
     } catch (checkoutError) {
-      setError(checkoutError instanceof Error ? checkoutError.message : "Unable to start card payment.");
+      setError(checkoutError instanceof Error ? checkoutError.message : pick("Unable to start card payment.", "ბარათით გადახდის დაწყება ვერ მოხერხდა."));
     } finally {
       setLoading(false);
     }
@@ -58,10 +60,10 @@ export default function CardTopupPage() {
     setMessage("");
     try {
       const order = await syncBogCardOrder(providerOrderId);
-      setMessage(`Order ${order.provider_order_id} is now ${order.status}.`);
+      setMessage(pick(`Order ${order.provider_order_id} is now ${order.status}.`, `შეკვეთა ${order.provider_order_id} ახლა არის ${order.status}.`));
       await loadOrders();
     } catch (syncError) {
-      setError(syncError instanceof Error ? syncError.message : "Unable to refresh card order.");
+      setError(syncError instanceof Error ? syncError.message : pick("Unable to refresh card order.", "ბარათის შეკვეთის განახლება ვერ მოხერხდა."));
       setLoading(false);
     }
   }
@@ -69,20 +71,22 @@ export default function CardTopupPage() {
   return (
     <section className="card">
       <div className="cardTitleRow">
-        <h1>Card top-up</h1>
+        <h1>{pick("Card top-up", "ბარათით შევსება")}</h1>
         <div className="toolbarRow">
           <button className="btn btnGhost" type="button" onClick={() => navigate("/deposits")}>
-            Bank transfer
+            {pick("Bank transfer", "საბანკო გადარიცხვა")}
           </button>
           <button className="btn btnGhost" type="button" onClick={() => void loadOrders()}>
-            Refresh list
+            {pick("Refresh list", "სიის განახლება")}
           </button>
         </div>
       </div>
 
       <p className="muted">
-        Pay with your card through Bank of Georgia&apos;s hosted checkout. After payment, return here and refresh the
-        order status if it has not updated yet.
+        {pick(
+          "Fund your fleet reserve with Bank of Georgia's hosted checkout. After payment, return here and refresh the order status if it has not updated yet.",
+          "შეავსეთ ფლიტის რეზერვი Bank of Georgia-ს ჩაშენებული ჩექაუთით. გადახდის შემდეგ დაბრუნდით აქ და, საჭიროების შემთხვევაში, განაახლეთ შეკვეთის სტატუსი."
+        )}
       </p>
 
       {error ? <p className="statusError" style={{ marginTop: "12px" }}>{error}</p> : null}
@@ -90,7 +94,7 @@ export default function CardTopupPage() {
 
       <div className="cardTopupForm">
         <label className="cardTopupField">
-          <span className="txSub">Amount (GEL)</span>
+          <span className="txSub">{pick("Amount (GEL)", "თანხა (GEL)")}</span>
           <input
             className="transferInput"
             inputMode="decimal"
@@ -100,12 +104,12 @@ export default function CardTopupPage() {
           />
         </label>
         <button className="transferSubmit" type="button" onClick={() => void startCheckout()} disabled={loading}>
-          {loading ? "Preparing..." : "Continue to card payment"}
+          {loading ? pick("Preparing...", "მზადდება...") : pick("Continue to card payment", "გადასვლა ბარათით გადახდაზე")}
         </button>
       </div>
 
       <h2 className="h2" style={{ marginTop: "24px", marginBottom: "10px" }}>
-        Recent card top-ups
+        {pick("Recent card top-ups", "ბოლო ბარათით შევსებები")}
       </h2>
       <div className="txList" role="list">
         {orders.length ? (
@@ -115,24 +119,25 @@ export default function CardTopupPage() {
                 <div className="txTitle">
                   {order.amount} {order.currency}
                 </div>
+                {order.fleet_name ? <div className="txSub">{pick("Fleet", "ფლიტი")}: {order.fleet_name}</div> : null}
                 <div className="txSub">
                   {order.status}
                   {order.card_type ? ` • ${order.card_type}` : ""}
                   {order.transaction_id ? ` • txn ${order.transaction_id}` : ""}
                 </div>
-                <div className="txSub">Order #{order.provider_order_id}</div>
+                <div className="txSub">{pick("Order", "შეკვეთა")} #{order.provider_order_id}</div>
                 <div className="txSub">{order.created_at}</div>
               </div>
 
               <div className="cardTopupActions">
                 {order.status !== "completed" && order.redirect_url ? (
                   <button className="btn btnSoft" type="button" onClick={() => window.location.assign(order.redirect_url)}>
-                    Open checkout
+                    {pick("Open checkout", "ჩექაუთის გახსნა")}
                   </button>
                 ) : null}
                 {order.status !== "completed" ? (
                   <button className="btn btnSoft" type="button" onClick={() => void refreshOrder(order.provider_order_id)}>
-                    Refresh status
+                    {pick("Refresh status", "სტატუსის განახლება")}
                   </button>
                 ) : null}
               </div>
@@ -141,8 +146,8 @@ export default function CardTopupPage() {
         ) : (
           <div className="txRow" role="listitem">
             <div className="txMain">
-              <div className="txTitle">No card top-ups yet</div>
-              <div className="txSub">Create your first secure checkout above.</div>
+              <div className="txTitle">{pick("No card top-ups yet", "ბარათით შევსება ჯერ არ არის")}</div>
+              <div className="txSub">{pick("Create your first secure checkout above.", "ზემოთ შექმენით თქვენი პირველი დაცული ჩექაუთი.")}</div>
             </div>
           </div>
         )}

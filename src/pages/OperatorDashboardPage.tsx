@@ -5,6 +5,7 @@ import {
   syncDeposits,
   type DepositInstruction
 } from "../lib/api";
+import { useI18n } from "../lib/i18n";
 
 function parseApiError(error: unknown, fallback: string) {
   if (!(error instanceof Error)) return fallback;
@@ -22,6 +23,7 @@ function parseApiError(error: unknown, fallback: string) {
 }
 
 export default function OperatorDashboardPage() {
+  const { pick } = useI18n();
   const [instructions, setInstructions] = useState<DepositInstruction | null>(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
@@ -34,7 +36,7 @@ export default function OperatorDashboardPage() {
       const instructionData = await depositInstructions();
       setInstructions(instructionData);
     } catch (err) {
-      setError(parseApiError(err, "Unable to load operator tools right now."));
+      setError(parseApiError(err, pick("Unable to load operator tools right now.", "ოპერატორის ინსტრუმენტები ახლა ვერ ჩაიტვირთა.")));
     } finally {
       setLoading(false);
     }
@@ -51,10 +53,13 @@ export default function OperatorDashboardPage() {
     try {
       const result = await syncDeposits();
       setMessage(
-        `Checked ${result.checked_count} bank activity item(s), matched ${result.matched_count}, and credited ${result.credited_count} deposit(s).`
+        pick(
+          `Checked ${result.checked_count} bank activity item(s), matched ${result.matched_count}, and credited ${result.credited_count} deposit(s).`,
+          `შემოწმდა ${result.checked_count} საბანკო ჩანაწერი, დაემთხვა ${result.matched_count} და ჩაირიცხა ${result.credited_count} შევსება.`
+        )
       );
     } catch (err) {
-      setError(parseApiError(err, "Deposit sync failed."));
+      setError(parseApiError(err, pick("Deposit sync failed.", "შევსების სინქი ვერ შესრულდა.")));
     } finally {
       setLoading(false);
     }
@@ -63,23 +68,26 @@ export default function OperatorDashboardPage() {
   async function copyValue(value: string) {
     try {
       await navigator.clipboard.writeText(value);
-      setMessage("Copied.");
+      setMessage(pick("Copied.", "კოპირებულია."));
     } catch {
-      setMessage("Copy failed.");
+      setMessage(pick("Copy failed.", "კოპირება ვერ მოხერხდა."));
     }
   }
 
   return (
     <div className="ownerDashboard">
       <section className="card ownerHero">
-        <div className="ownerHeroEyebrow">Operator tools</div>
-        <div className="ownerHeroBalance">BoG sync access</div>
+        <div className="ownerHeroEyebrow">{pick("Operator tools", "ოპერატორის ინსტრუმენტები")}</div>
+        <div className="ownerHeroBalance">{pick("BoG sync access", "BoG სინქის წვდომა")}</div>
         <p className="ownerHeroNote">
-          Use this page for day-to-day payout and funding operations. Admin-only reporting and review pages stay hidden unless your role allows them.
+          {pick(
+            "Use this page for day-to-day payout and funding operations. Admin-only reporting and review pages stay hidden unless your role allows them.",
+            "ეს გვერდი გამოიყენეთ ყოველდღიური გატანისა და შევსების ოპერაციებისთვის. მხოლოდ ადმინის გვერდები დამალული დარჩება, თუ თქვენი როლი ამის საშუალებას არ იძლევა."
+          )}
         </p>
         <div className="ownerHeroMeta">
-          <span>{instructions?.fleet_name ?? "Active fleet"}</span>
-          {loading ? <span>Refreshing...</span> : <span>Operator role</span>}
+          <span>{instructions?.fleet_name ?? pick("Active fleet", "აქტიური ფლიტი")}</span>
+          {loading ? <span>{pick("Refreshing...", "ახლდება...")}</span> : <span>{pick("Operator role", "ოპერატორის როლი")}</span>}
         </div>
       </section>
 
@@ -88,9 +96,9 @@ export default function OperatorDashboardPage() {
 
       <section className="card">
         <div className="cardTitleRow">
-          <h2 className="h2">Fleet funding instructions</h2>
+          <h2 className="h2">{pick("Fleet funding instructions", "ფლიტის შევსების ინსტრუქცია")}</h2>
           <button className="btn btnGhost" type="button" onClick={() => void runDepositSync()}>
-            {loading ? "Syncing..." : "Sync from BoG"}
+            {loading ? pick("Syncing...", "სინქდება...") : pick("Sync from BoG", "BoG-დან სინქი")}
           </button>
         </div>
 
@@ -98,28 +106,28 @@ export default function OperatorDashboardPage() {
           <div className="txList" role="list">
             <div className="txRow" role="listitem">
               <div className="txMain">
-                <div className="txTitle">Use this exact fleet reference</div>
+                <div className="txTitle">{pick("Use this exact fleet reference", "გამოიყენეთ ზუსტად ეს ფლიტის კოდი")}</div>
                 <div className="txSub mappingCode">{instructions.reference_code}</div>
-                <div className="txSub">This code must be included in the bank transfer comment so the deposit can be matched.</div>
+                <div className="txSub">{pick("This code must be included in the bank transfer comment so the deposit can be matched.", "შევსების დასამთხვევად ეს კოდი აუცილებლად უნდა იყოს საბანკო გადარიცხვის კომენტარში.")}</div>
               </div>
               <button className="btn btnSoft" type="button" onClick={() => void copyValue(instructions.reference_code)}>
-                Copy
+                {pick("Copy", "კოპირება")}
               </button>
             </div>
             <div className="txRow" role="listitem">
               <div className="txMain">
-                <div className="txTitle">Company account</div>
-                <div className="txSub">{instructions.account_holder_name || "Company account"}</div>
+                <div className="txTitle">{pick("Company account", "კომპანიის ანგარიში")}</div>
+                <div className="txSub">{instructions.account_holder_name || pick("Company account", "კომპანიის ანგარიში")}</div>
                 <div className="txSub">{instructions.account_number}</div>
               </div>
               <button className="btn btnSoft" type="button" onClick={() => void copyValue(instructions.account_number)}>
-                Copy
+                {pick("Copy", "კოპირება")}
               </button>
             </div>
             <div className="txRow" role="listitem">
               <div className="txMain">
-                <div className="txTitle">What happens next</div>
-                <div className="txSub">After the next BoG sync, matched funding will be credited to the fleet reserve automatically.</div>
+                <div className="txTitle">{pick("What happens next", "შემდეგ რა ხდება")}</div>
+                <div className="txSub">{pick("After the next BoG sync, matched funding will be credited to the fleet reserve automatically.", "შემდეგი BoG სინქის შემდეგ დამთხვევილი თანხა ავტომატურად ჩაირიცხება ფლიტის რეზერვზე.")}</div>
               </div>
             </div>
           </div>
@@ -128,9 +136,9 @@ export default function OperatorDashboardPage() {
 
       <section className="ownerQuickLinks">
         <Link className="card ownerLinkCard" to="/payouts">
-          <div className="ownerLinkEyebrow">Payouts</div>
-          <div className="txTitle">Track payout progress</div>
-          <div className="txSub">Refresh Bank of Georgia payout statuses and follow any in-flight withdrawal requests.</div>
+          <div className="ownerLinkEyebrow">{pick("Payouts", "გატანები")}</div>
+          <div className="txTitle">{pick("Track payout progress", "გატანის პროგრესის ნახვა")}</div>
+          <div className="txSub">{pick("Refresh Bank of Georgia payout statuses and follow any in-flight withdrawal requests.", "განაახლეთ Bank of Georgia-ს გატანის სტატუსები და თვალი ადევნეთ მიმდინარე მოთხოვნებს.")}</div>
         </Link>
       </section>
     </div>

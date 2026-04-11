@@ -1,8 +1,10 @@
 from decimal import Decimal
+from datetime import timedelta
 
 from django.conf import settings
 from django.db import transaction as db_transaction
-from django.db.models import F, Q, Sum
+from django.db.models import Count, Q, Sum
+from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -22,17 +24,20 @@ from ledger.services import (
     record_driver_withdrawal_hold,
 )
 from payments.models import InternalTransfer
-from integrations.models import ProviderConnection
+from integrations.models import ProviderConnection, YandexTransactionRecord
 from integrations.services import sync_bog_deposits
-from .models import BankAccount, Deposit, IncomingBankTransfer, Wallet, WithdrawalRequest
+from .models import BankAccount, Deposit, FleetRatingPenalty, IncomingBankTransfer, Wallet, WithdrawalRequest
 from .serializers import (
+    AdminNetworkSummarySerializer,
     BankAccountSerializer,
     DepositInstructionSerializer,
     DepositSerializer,
     DepositSyncRequestSerializer,
     IncomingBankTransferMatchSerializer,
     IncomingBankTransferSerializer,
+    OwnerTransactionSerializer,
     OwnerFleetSummarySerializer,
+    OwnerDriverFinanceSerializer,
     WalletTopUpSerializer,
     TransactionFeedSerializer,
     WalletSerializer,
@@ -84,6 +89,27 @@ def _get_active_fleet_bog_connection(*, fleet):
     return None
 
 
+def _get_active_fleet_yandex_connection(*, fleet):
+    bindings = FleetPhoneBinding.objects.filter(
+        fleet=fleet,
+        is_active=True,
+        user__is_active=True,
+        role__in=[FleetPhoneBinding.Role.OWNER, FleetPhoneBinding.Role.ADMIN],
+    ).order_by("-role", "created_at", "id")
+    for fleet_binding in bindings:
+        connection = (
+            ProviderConnection.objects.filter(
+                user=fleet_binding.user,
+                provider=ProviderConnection.Provider.YANDEX,
+            )
+            .order_by("id")
+            .first()
+        )
+        if connection is not None:
+            return connection
+    return None
+
+
 def _fleet_transfer_review_queryset(*, fleet):
     reference_code = build_fleet_deposit_reference(fleet)
     return IncomingBankTransfer.objects.filter(
@@ -92,6 +118,26 @@ def _fleet_transfer_review_queryset(*, fleet):
     ).filter(
         Q(fleet=fleet) | Q(reference_text__icontains=reference_code)
     )
+
+
+def _fleet_rating_from_completed_withdrawals(*, completed_withdrawals_count, penalty_count=0):
+    rating_value = (Decimal(completed_withdrawals_count // 5000) - Decimal(penalty_count)) / Decimal("10")
+    return f"{rating_value:.1f}"
+
+
+def _driver_level_from_completed_withdrawals(*, completed_withdrawals_count):
+    return (completed_withdrawals_count // 100) + 1
+
+
+def _driver_reward_from_completed_withdrawals(*, completed_withdrawals_count):
+    if completed_withdrawals_count < 100:
+        return "No reward yet"
+    return "5 free withdrawals"
+
+
+def _withdrawal_cooldown_response():
+    cooldown_seconds = max(int(getattr(settings, "WITHDRAWAL_REQUEST_COOLDOWN_SECONDS", 300)), 0)
+    return {"detail": f"Please wait {cooldown_seconds // 60} minutes before requesting another withdrawal."}
 
 
 class BalanceView(APIView):
@@ -111,11 +157,37 @@ class BalanceView(APIView):
                 currency=wallet.currency,
             )
             driver_balance = get_account_balance(driver_account, wallet.currency)
+            driver_completed_withdrawals_count = WithdrawalRequest.objects.filter(
+                user=request.user,
+                fleet=driver_membership.fleet,
+                status=WithdrawalRequest.Status.COMPLETED,
+            ).count()
+            completed_withdrawals_count = WithdrawalRequest.objects.filter(
+                fleet=driver_membership.fleet,
+                status=WithdrawalRequest.Status.COMPLETED,
+            ).count()
+            fleet_rating_penalty_count = FleetRatingPenalty.objects.filter(
+                fleet=driver_membership.fleet,
+                reason=FleetRatingPenalty.Reason.INSUFFICIENT_RESERVE,
+            ).count()
+            full_name = request.user.get_full_name().strip()
             return Response(
                 {
                     "balance": str(driver_balance),
                     "currency": wallet.currency,
                     "updated_at": wallet.updated_at,
+                    "fleet_rating": _fleet_rating_from_completed_withdrawals(
+                        completed_withdrawals_count=completed_withdrawals_count,
+                        penalty_count=fleet_rating_penalty_count,
+                    ),
+                    "fleet_completed_withdrawals": completed_withdrawals_count,
+                    "driver_name": full_name or request.user.username,
+                    "driver_level": _driver_level_from_completed_withdrawals(
+                        completed_withdrawals_count=driver_completed_withdrawals_count
+                    ),
+                    "driver_reward": _driver_reward_from_completed_withdrawals(
+                        completed_withdrawals_count=driver_completed_withdrawals_count
+                    ),
                 }
             )
         ledger_account = get_or_create_user_ledger_account(request.user, wallet.currency)
@@ -237,6 +309,18 @@ class WithdrawalCreateView(APIView):
             finalize_idempotent_request(idempotency_record, status_code=404, response_body=error_payload)
             return Response(error_payload, status=status.HTTP_404_NOT_FOUND)
 
+        cooldown_seconds = max(int(getattr(settings, "WITHDRAWAL_REQUEST_COOLDOWN_SECONDS", 300)), 0)
+        if cooldown_seconds > 0:
+            cutoff = timezone.now() - timedelta(seconds=cooldown_seconds)
+            recent_withdrawal_exists = WithdrawalRequest.objects.filter(
+                user=request.user,
+                created_at__gte=cutoff,
+            ).exists()
+            if recent_withdrawal_exists:
+                error_payload = _withdrawal_cooldown_response()
+                finalize_idempotent_request(idempotency_record, status_code=429, response_body=error_payload)
+                return Response(error_payload, status=status.HTTP_429_TOO_MANY_REQUESTS)
+
         if amount <= Decimal("0"):
             error_payload = {"detail": "Amount must be greater than zero."}
             finalize_idempotent_request(idempotency_record, status_code=400, response_body=error_payload)
@@ -248,7 +332,7 @@ class WithdrawalCreateView(APIView):
             .first()
         )
         wallet, _ = Wallet.objects.get_or_create(user=request.user)
-        fee_amount = Decimal(str(getattr(settings, "WITHDRAWAL_FEE_FLAT", "2.00")))
+        fee_amount = Decimal(str(getattr(settings, "WITHDRAWAL_FEE_FLAT", "0.50")))
 
         with db_transaction.atomic():
             if driver_membership is not None:
@@ -268,12 +352,22 @@ class WithdrawalCreateView(APIView):
                 driver_balance = get_account_balance(locked_by_id[driver_account.id], wallet.currency)
                 fleet_reserve_balance = get_account_balance(locked_by_id[fleet_reserve_account.id], wallet.currency)
 
-                if amount > driver_balance:
+                if amount + fee_amount > driver_balance:
                     error_payload = {"detail": "Insufficient driver available balance for this withdrawal."}
                     finalize_idempotent_request(idempotency_record, status_code=400, response_body=error_payload)
                     return Response(error_payload, status=status.HTTP_400_BAD_REQUEST)
 
-                if amount + fee_amount > fleet_reserve_balance:
+                if amount > fleet_reserve_balance:
+                    FleetRatingPenalty.objects.create(
+                        fleet=driver_membership.fleet,
+                        user=request.user,
+                        reason=FleetRatingPenalty.Reason.INSUFFICIENT_RESERVE,
+                        metadata={
+                            "requested_amount": str(amount),
+                            "fleet_reserve_balance": str(fleet_reserve_balance),
+                            "driver_balance": str(driver_balance),
+                        },
+                    )
                     error_payload = {"detail": "Insufficient fleet reserve balance for this withdrawal."}
                     finalize_idempotent_request(idempotency_record, status_code=400, response_body=error_payload)
                     return Response(error_payload, status=status.HTTP_400_BAD_REQUEST)
@@ -310,7 +404,7 @@ class WithdrawalCreateView(APIView):
                 locked_ledger_account = LedgerAccount.objects.select_for_update().get(id=ledger_account.id)
                 current_balance = get_account_balance(locked_ledger_account, wallet.currency)
 
-                if amount > current_balance:
+                if amount + fee_amount > current_balance:
                     error_payload = {"detail": "Insufficient wallet balance for this withdrawal."}
                     finalize_idempotent_request(idempotency_record, status_code=400, response_body=error_payload)
                     return Response(
@@ -323,6 +417,7 @@ class WithdrawalCreateView(APIView):
                     wallet=wallet,
                     bank_account=bank_account,
                     amount=amount,
+                    fee_amount=fee_amount,
                     currency=wallet.currency,
                     status=WithdrawalRequest.Status.PENDING,
                     note=note,
@@ -330,7 +425,7 @@ class WithdrawalCreateView(APIView):
 
                 create_ledger_entry(
                     account=locked_ledger_account,
-                    amount=-amount,
+                    amount=-(amount + fee_amount),
                     entry_type="withdrawal_hold",
                     created_by=request.user,
                     reference_type="withdrawal",
@@ -339,10 +434,11 @@ class WithdrawalCreateView(APIView):
                         "bank_account_id": bank_account.id,
                         "description": f"Withdrawal to {bank_account.bank_name}",
                         "note": note,
+                        "fee_amount": str(fee_amount),
                     },
                 )
 
-                wallet.balance = current_balance - amount
+                wallet.balance = current_balance - amount - fee_amount
                 wallet.save(update_fields=["balance", "updated_at"])
 
         response_payload = WithdrawalSerializer(withdrawal).data
@@ -366,9 +462,9 @@ class WithdrawalListView(generics.ListAPIView):
     def get_queryset(self):
         binding = get_request_fleet_binding(user=self.request.user, request=self.request)
         if meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.OPERATOR):
-            return WithdrawalRequest.objects.filter(fleet=binding.fleet).select_related("bank_account").order_by("-created_at", "-id")
+            return WithdrawalRequest.objects.filter(fleet=binding.fleet).select_related("bank_account", "user").order_by("-created_at", "-id")
         if meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.DRIVER):
-            return WithdrawalRequest.objects.filter(user=self.request.user).select_related("bank_account").order_by("-created_at", "-id")
+            return WithdrawalRequest.objects.filter(user=self.request.user).select_related("bank_account", "user").order_by("-created_at", "-id")
         return WithdrawalRequest.objects.none()
 
 
@@ -558,9 +654,7 @@ class OwnerFleetSummaryView(APIView):
             .select_related("user")
             .order_by("-created_at", "-id")
         )
-        pending_payouts_total = (
-            pending_withdrawals.aggregate(total=Sum(F("amount") + F("fee_amount")))["total"] or Decimal("0.00")
-        )
+        pending_payouts_total = pending_withdrawals.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
         failed_withdrawals = WithdrawalRequest.objects.filter(
             fleet=binding.fleet,
             status=WithdrawalRequest.Status.FAILED,
@@ -608,6 +702,99 @@ class OwnerFleetSummaryView(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
+class AdminNetworkSummaryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if binding is None or binding.role != FleetPhoneBinding.Role.ADMIN:
+            return Response({"detail": "Only admins can view app-wide finance data."}, status=403)
+
+        currency = "GEL"
+        total_funded = (
+            LedgerEntry.objects.filter(
+                account__account_type=LedgerAccount.AccountType.FLEET_RESERVE,
+                entry_type="fleet_reserve_deposit_credit",
+                currency=currency,
+            ).aggregate(total=Sum("amount"))["total"]
+            or Decimal("0.00")
+        )
+
+        tracked_withdrawals = WithdrawalRequest.objects.filter(
+            fleet__isnull=False,
+            currency=currency,
+        ).exclude(status=WithdrawalRequest.Status.FAILED)
+        total_withdrawn = tracked_withdrawals.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+        completed_withdrawal_transactions = tracked_withdrawals.count()
+
+        total_fees = tracked_withdrawals.aggregate(total=Sum("fee_amount"))["total"] or Decimal("0.00")
+
+        pending_withdrawals = WithdrawalRequest.objects.filter(
+            fleet__isnull=False,
+            status__in=[WithdrawalRequest.Status.PENDING, WithdrawalRequest.Status.PROCESSING],
+            currency=currency,
+        )
+        pending_payouts_total = pending_withdrawals.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+
+        withdrawn_by_fleet = list(
+            tracked_withdrawals.values("fleet_id", "fleet__name")
+            .annotate(
+                transaction_count=Count("id"),
+                total_withdrawn=Sum("amount"),
+            )
+            .order_by("-transaction_count", "-total_withdrawn", "fleet__name")
+        )
+        pending_by_fleet_rows = list(
+            pending_withdrawals.values("fleet_id", "fleet__name")
+            .annotate(
+                transaction_count=Count("id"),
+                pending_total=Sum("amount"),
+            )
+            .order_by("-transaction_count", "-pending_total", "fleet__name")
+        )
+        pending_fleet_ids = [item["fleet_id"] for item in pending_by_fleet_rows if item["fleet_id"]]
+        pending_fleets = {fleet.id: fleet for fleet in Fleet.objects.filter(id__in=pending_fleet_ids)}
+
+        serializer = AdminNetworkSummarySerializer(
+            {
+                "currency": currency,
+                "total_funded": total_funded,
+                "total_withdrawn": total_withdrawn,
+                "total_fees": total_fees,
+                "pending_payouts_count": pending_withdrawals.count(),
+                "pending_payouts_total": pending_payouts_total,
+                "fleet_count": Fleet.objects.count(),
+                "active_fleet_count": Fleet.objects.filter(phone_bindings__is_active=True).distinct().count(),
+                "completed_withdrawal_transactions": completed_withdrawal_transactions,
+                "withdrawn_by_fleet": [
+                    {
+                        "fleet_id": item["fleet_id"],
+                        "fleet_name": item["fleet__name"] or f"Fleet {item['fleet_id']}",
+                        "transaction_count": item["transaction_count"],
+                        "total_withdrawn": item["total_withdrawn"] or Decimal("0.00"),
+                    }
+                    for item in withdrawn_by_fleet
+                ],
+                "pending_by_fleet": [
+                    {
+                        "fleet_id": item["fleet_id"],
+                        "fleet_name": item["fleet__name"] or f"Fleet {item['fleet_id']}",
+                        "transaction_count": item["transaction_count"],
+                        "pending_total": item["pending_total"] or Decimal("0.00"),
+                        "reserve_balance": get_account_balance(
+                            get_or_create_fleet_reserve_account(pending_fleets[item["fleet_id"]], currency=currency),
+                            currency,
+                        )
+                        if item["fleet_id"] in pending_fleets
+                        else Decimal("0.00"),
+                    }
+                    for item in pending_by_fleet_rows
+                ],
+            }
+        )
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
 class DepositListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = DepositSerializer
@@ -623,6 +810,126 @@ class DepositListView(generics.ListAPIView):
         if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.ADMIN):
             return Response({"detail": "Only admin/owner can view fleet deposits."}, status=403)
         return super().list(request, *args, **kwargs)
+
+
+class OwnerDriverFinanceListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if not meets_min_role(binding=binding, minimum_role=FleetPhoneBinding.Role.ADMIN):
+            return Response({"detail": "Only admin/owner can view driver finance data."}, status=403)
+
+        driver_bindings = list(
+            FleetPhoneBinding.objects.filter(
+                fleet=binding.fleet,
+                role=FleetPhoneBinding.Role.DRIVER,
+                is_active=True,
+                user__is_active=True,
+            )
+            .select_related("user")
+            .order_by("created_at", "id")
+        )
+        memberships = {
+            membership.user_id: membership
+            for membership in DriverFleetMembership.objects.filter(
+                fleet=binding.fleet,
+                user_id__in=[item.user_id for item in driver_bindings],
+                is_active=True,
+            )
+        }
+
+        transaction_count_map = {}
+        yandex_connection = _get_active_fleet_yandex_connection(fleet=binding.fleet)
+        if yandex_connection is not None:
+            external_ids = [
+                membership.yandex_external_driver_id
+                for membership in memberships.values()
+                if membership.yandex_external_driver_id
+            ]
+            if external_ids:
+                transaction_count_map = {
+                    row["driver_external_id"]: row["transaction_count"]
+                    for row in YandexTransactionRecord.objects.filter(
+                        connection=yandex_connection,
+                        driver_external_id__in=external_ids,
+                    )
+                    .values("driver_external_id")
+                    .annotate(transaction_count=Count("id"))
+                }
+
+        payload = []
+        for item in driver_bindings:
+            driver_account = get_or_create_driver_available_account(
+                item.user,
+                fleet=binding.fleet,
+                currency="GEL",
+            )
+            membership = memberships.get(item.user_id)
+            external_driver_id = membership.yandex_external_driver_id if membership else ""
+            payload.append(
+                {
+                    "id": item.id,
+                    "first_name": item.user.first_name,
+                    "last_name": item.user.last_name,
+                    "phone_number": item.phone_number,
+                    "transaction_count": transaction_count_map.get(external_driver_id, 0),
+                    "available_balance": get_account_balance(driver_account, "GEL"),
+                    "currency": "GEL",
+                    "created_at": item.created_at,
+                }
+            )
+
+        serializer = OwnerDriverFinanceSerializer(payload, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class OwnerTransactionListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        binding = get_request_fleet_binding(user=request.user, request=request)
+        if binding is None or binding.role != FleetPhoneBinding.Role.OWNER:
+            return Response({"detail": "Only owners can view fleet transactions."}, status=403)
+
+        currency = "GEL"
+        deposit_rows = [
+            {
+                "id": f"D-{item.id}",
+                "transaction_type": "Deposit",
+                "amount": item.amount,
+                "currency": item.currency,
+                "created_at": item.created_at,
+            }
+            for item in Deposit.objects.filter(
+                fleet=binding.fleet,
+                status=Deposit.Status.COMPLETED,
+                currency=currency,
+            )
+            .order_by("-created_at", "-id")[:100]
+        ]
+        withdrawal_rows = [
+            {
+                "id": f"W-{item.id}",
+                "transaction_type": "Withdrawal",
+                "amount": item.amount,
+                "currency": item.currency,
+                "created_at": item.created_at,
+            }
+            for item in WithdrawalRequest.objects.filter(
+                fleet=binding.fleet,
+                currency=currency,
+            )
+            .exclude(status=WithdrawalRequest.Status.FAILED)
+            .order_by("-created_at", "-id")[:100]
+        ]
+        payload = sorted(
+            deposit_rows + withdrawal_rows,
+            key=lambda item: item["created_at"],
+            reverse=True,
+        )[:100]
+        serializer = OwnerTransactionSerializer(payload, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 class UnmatchedIncomingTransferListView(generics.ListAPIView):

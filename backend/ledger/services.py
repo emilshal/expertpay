@@ -253,7 +253,7 @@ def record_driver_withdrawal_hold(
 
     create_ledger_entry(
         account=driver_account,
-        amount=-amount,
+        amount=-(amount + fee_amount),
         entry_type="driver_withdrawal_hold",
         created_by=created_by,
         currency=currency,
@@ -264,7 +264,7 @@ def record_driver_withdrawal_hold(
     )
     create_ledger_entry(
         account=fleet_reserve_account,
-        amount=-(amount + fee_amount),
+        amount=-amount,
         entry_type="fleet_reserve_withdrawal_hold",
         created_by=created_by,
         currency=currency,
@@ -317,7 +317,7 @@ def reverse_driver_withdrawal_hold(
 
     create_ledger_entry(
         account=driver_account,
-        amount=amount,
+        amount=amount + fee_amount,
         entry_type="driver_withdrawal_reversal",
         created_by=created_by,
         currency=currency,
@@ -328,7 +328,7 @@ def reverse_driver_withdrawal_hold(
     )
     create_ledger_entry(
         account=fleet_reserve_account,
-        amount=amount + fee_amount,
+        amount=amount,
         entry_type="fleet_reserve_withdrawal_reversal",
         created_by=created_by,
         currency=currency,

@@ -83,10 +83,13 @@ class BogPayoutSerializer(serializers.ModelSerializer):
 
 
 class BogCardOrderSerializer(serializers.ModelSerializer):
+    fleet_name = serializers.CharField(source="fleet.name", read_only=True)
+
     class Meta:
         model = BogCardOrder
         fields = (
             "id",
+            "fleet_name",
             "provider_order_id",
             "external_order_id",
             "parent_order_id",
@@ -124,6 +127,14 @@ class CreateBogCardOrderSerializer(serializers.Serializer):
 
 class SyncBogPayoutStatusSerializer(serializers.Serializer):
     payout_id = serializers.IntegerField(min_value=1, required=False)
+
+
+class RequestBogPayoutOtpSerializer(serializers.Serializer):
+    payout_id = serializers.IntegerField(min_value=1, required=False)
+
+
+class SignBogPayoutSerializer(serializers.Serializer):
+    otp = serializers.CharField(min_length=4, max_length=16, trim_whitespace=True)
 
 
 class UpdateBankPayoutStatusSerializer(serializers.Serializer):

@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { reconciliationSummary, type ReconciliationSummary } from "../lib/api";
+import { useI18n } from "../lib/i18n";
 
 export default function SettingsPage() {
+  const { pick } = useI18n();
   const [report, setReport] = useState<ReconciliationSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -13,7 +15,7 @@ export default function SettingsPage() {
       const data = await reconciliationSummary();
       setReport(data);
     } catch {
-      setError("Unable to load reconciliation report.");
+      setError(pick("Unable to load reconciliation report.", "შერიგების რეპორტი ვერ ჩაიტვირთა."));
     } finally {
       setLoading(false);
     }
@@ -26,9 +28,9 @@ export default function SettingsPage() {
   return (
     <section className="card">
       <div className="cardTitleRow">
-        <h1>Reconciliation</h1>
+        <h1>{pick("Reconciliation", "შერიგება")}</h1>
         <button className="btn btnGhost" type="button" onClick={() => void loadReport()}>
-          {loading ? "Loading..." : "Refresh"}
+          {loading ? pick("Loading...", "იტვირთება...") : pick("Refresh", "განახლება")}
         </button>
       </div>
 
@@ -39,6 +41,7 @@ export default function SettingsPage() {
           <div className="txRow" role="listitem">
             <div className="txMain">
               <div className="txTitle">Overall status</div>
+              <div className="txTitle">{pick("Overall status", "საერთო სტატუსი")}</div>
               <div className="txSub">{report.generated_at}</div>
             </div>
             <div className={`txAmount ${report.overall_status === "OK" ? "pos" : "neg"}`}>
@@ -48,9 +51,9 @@ export default function SettingsPage() {
 
           <div className="txRow" role="listitem">
             <div className="txMain">
-              <div className="txTitle">Treasury</div>
-              <div className="txSub">Balance {report.treasury.balance} {report.currency}</div>
-              <div className="txSub">Expected internal total {report.treasury.expected_total} {report.currency}</div>
+              <div className="txTitle">{pick("Treasury", "საბაზისო ანგარიში")}</div>
+              <div className="txSub">{pick("Balance", "ნაშთი")} {report.treasury.balance} {report.currency}</div>
+              <div className="txSub">{pick("Expected internal total", "მოსალოდნელი შიდა ჯამი")} {report.treasury.expected_total} {report.currency}</div>
             </div>
             <div className={`txAmount ${report.treasury.status === "OK" ? "pos" : "neg"}`}>
               {report.treasury.delta}
@@ -59,28 +62,28 @@ export default function SettingsPage() {
 
           <div className="txRow" role="listitem">
             <div className="txMain">
-              <div className="txTitle">Fleet reserves</div>
-              <div className="txSub">Total {report.fleet_reserves.total_balance} {report.currency}</div>
-              <div className="txSub">Accounts {report.fleet_reserves.account_count}</div>
+              <div className="txTitle">{pick("Fleet reserves", "ფლიტის რეზერვები")}</div>
+              <div className="txSub">{pick("Total", "ჯამი")} {report.fleet_reserves.total_balance} {report.currency}</div>
+              <div className="txSub">{pick("Accounts", "ანგარიშები")} {report.fleet_reserves.account_count}</div>
             </div>
             <div className="txAmount pos">{report.fleet_reserves.account_count}</div>
           </div>
 
           <div className="txRow" role="listitem">
             <div className="txMain">
-              <div className="txTitle">Driver available balances</div>
-              <div className="txSub">Total {report.driver_available.total_balance} {report.currency}</div>
-              <div className="txSub">Accounts {report.driver_available.account_count}</div>
+              <div className="txTitle">{pick("Driver available balances", "მძღოლების ხელმისაწვდომი ბალანსები")}</div>
+              <div className="txSub">{pick("Total", "ჯამი")} {report.driver_available.total_balance} {report.currency}</div>
+              <div className="txSub">{pick("Accounts", "ანგარიშები")} {report.driver_available.account_count}</div>
             </div>
             <div className="txAmount pos">{report.driver_available.account_count}</div>
           </div>
 
           <div className="txRow" role="listitem">
             <div className="txMain">
-              <div className="txTitle">Pending payouts / clearing</div>
-              <div className="txSub">Clearing {report.payout_clearing.balance} {report.currency}</div>
+              <div className="txTitle">{pick("Pending payouts / clearing", "მოლოდინში მყოფი გატანები / გასწორება")}</div>
+              <div className="txSub">{pick("Clearing", "გასწორება")} {report.payout_clearing.balance} {report.currency}</div>
               <div className="txSub">
-                Pending withdrawals {report.payout_clearing.pending_withdrawals_total} {report.currency}
+                {pick("Pending withdrawals", "მოლოდინში მყოფი გატანები")} {report.payout_clearing.pending_withdrawals_total} {report.currency}
               </div>
             </div>
             <div className="txAmount pos">{report.payout_clearing.pending_withdrawals_count}</div>
@@ -88,8 +91,8 @@ export default function SettingsPage() {
 
           <div className="txRow" role="listitem">
             <div className="txMain">
-              <div className="txTitle">Platform fees</div>
-              <div className="txSub">Collected {report.platform_fees.balance} {report.currency}</div>
+              <div className="txTitle">{pick("Platform fees", "პლატფორმის საკომისიოები")}</div>
+              <div className="txSub">{pick("Collected", "შეგროვებული")} {report.platform_fees.balance} {report.currency}</div>
             </div>
             <div className="txAmount pos">{report.platform_fees.balance}</div>
           </div>

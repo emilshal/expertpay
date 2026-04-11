@@ -1,13 +1,15 @@
 from decimal import Decimal
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from accounts.models import DriverFleetMembership, Fleet, FleetPhoneBinding
-from integrations.models import ProviderConnection
+from integrations.models import ExternalEvent, ProviderConnection, YandexTransactionRecord
 from ledger.models import LedgerAccount, LedgerEntry
 from ledger.services import (
     get_account_balance,
@@ -17,8 +19,9 @@ from ledger.services import (
     record_fleet_reserve_deposit,
 )
 
-from .models import BankAccount, Deposit, IncomingBankTransfer, Wallet, WithdrawalRequest
+from .models import BankAccount, Deposit, FleetRatingPenalty, IncomingBankTransfer, Wallet, WithdrawalRequest
 from .services import build_fleet_deposit_reference
+from .views import _fleet_rating_from_completed_withdrawals
 
 
 User = get_user_model()
@@ -634,7 +637,7 @@ class OwnerFleetSummaryApiTests(APITestCase):
         self.assertEqual(response.data["total_withdrawn"], "50.00")
         self.assertEqual(response.data["total_fees"], "6.00")
         self.assertEqual(response.data["pending_payouts_count"], 2)
-        self.assertEqual(response.data["pending_payouts_total"], "54.00")
+        self.assertEqual(response.data["pending_payouts_total"], "50.00")
         self.assertEqual(response.data["unmatched_deposits_count"], 1)
         self.assertEqual(response.data["failed_payouts_count"], 1)
         self.assertEqual(response.data["failed_payouts_total"], "12.00")
@@ -644,7 +647,7 @@ class OwnerFleetSummaryApiTests(APITestCase):
         pending_names = {item["driver_name"] for item in response.data["pending_payouts"]}
         self.assertIn("Nika Gelashvili", pending_names)
 
-    def test_owner_summary_pending_total_counts_fleet_paid_fees(self):
+    def test_owner_summary_pending_total_counts_only_principal_when_driver_pays_fees(self):
         record_fleet_reserve_deposit(
             fleet=self.fleet,
             amount=Decimal("51.00"),
@@ -663,7 +666,7 @@ class OwnerFleetSummaryApiTests(APITestCase):
             fleet=self.fleet,
             bank_account=bank_account,
             amount=Decimal("50.00"),
-            fee_amount=Decimal("2.00"),
+            fee_amount=Decimal("0.50"),
             currency="GEL",
             status=WithdrawalRequest.Status.PENDING,
         )
@@ -672,12 +675,246 @@ class OwnerFleetSummaryApiTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["reserve_balance"], "51.00")
-        self.assertEqual(response.data["pending_payouts_total"], "52.00")
-        self.assertGreater(Decimal(response.data["pending_payouts_total"]), Decimal(response.data["reserve_balance"]))
+        self.assertEqual(response.data["pending_payouts_total"], "50.00")
+        self.assertLess(Decimal(response.data["pending_payouts_total"]), Decimal(response.data["reserve_balance"]))
 
     def test_driver_cannot_access_owner_summary(self):
         self.client.force_authenticate(self.driver_one)
         response = self.client.get(reverse("owner-fleet-summary"), HTTP_X_FLEET_NAME=self.fleet.name)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_owner_driver_finance_returns_driver_balances_and_transaction_counts(self):
+        record_driver_earning_allocation(
+            user=self.driver_one,
+            fleet=self.fleet,
+            amount=Decimal("44.00"),
+            created_by=self.owner,
+        )
+        record_driver_earning_allocation(
+            user=self.driver_two,
+            fleet=self.fleet,
+            amount=Decimal("12.50"),
+            created_by=self.owner,
+        )
+        yandex_connection = ProviderConnection.objects.create(
+            user=self.owner,
+            provider=ProviderConnection.Provider.YANDEX,
+            external_account_id="owner-summary-yandex",
+            status="active",
+        )
+        first_event = ExternalEvent.objects.create(
+            connection=yandex_connection,
+            external_id="evt-owner-summary-1",
+            event_type="transaction",
+            payload={},
+        )
+        second_event = ExternalEvent.objects.create(
+            connection=yandex_connection,
+            external_id="evt-owner-summary-2",
+            event_type="transaction",
+            payload={},
+        )
+        YandexTransactionRecord.objects.create(
+            connection=yandex_connection,
+            external_event=first_event,
+            external_transaction_id="tx-owner-summary-1",
+            driver_external_id="owner-summary-driver-1",
+            amount=Decimal("20.00"),
+            currency="GEL",
+        )
+        YandexTransactionRecord.objects.create(
+            connection=yandex_connection,
+            external_event=second_event,
+            external_transaction_id="tx-owner-summary-2",
+            driver_external_id="owner-summary-driver-1",
+            amount=Decimal("15.00"),
+            currency="GEL",
+        )
+
+        response = self.client.get(reverse("owner-driver-finance"), HTTP_X_FLEET_NAME=self.fleet.name)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 2)
+        row_map = {item["first_name"] or item["phone_number"]: item for item in response.data}
+        self.assertEqual(row_map["Nika"]["transaction_count"], 2)
+        self.assertEqual(row_map["Nika"]["available_balance"], "44.00")
+        self.assertEqual(row_map["598955602"]["transaction_count"], 0)
+        self.assertEqual(row_map["598955602"]["available_balance"], "12.50")
+
+    def test_driver_cannot_access_owner_driver_finance(self):
+        self.client.force_authenticate(self.driver_one)
+        response = self.client.get(reverse("owner-driver-finance"), HTTP_X_FLEET_NAME=self.fleet.name)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_owner_transactions_returns_fleet_deposits_and_withdrawals(self):
+        wallet, _ = Wallet.objects.get_or_create(user=self.owner)
+        Deposit.objects.create(
+            user=self.owner,
+            wallet=wallet,
+            fleet=self.fleet,
+            amount=Decimal("90.00"),
+            currency="GEL",
+            reference_code="EXP-FLT-000301",
+            provider_transaction_id="owner-transactions-deposit-1",
+        )
+        bank_account = BankAccount.objects.create(
+            user=self.driver_one,
+            bank_name="Bank of Georgia",
+            account_number="GE64BG00000000000301",
+            beneficiary_name="Nika Gelashvili",
+            beneficiary_inn="01010101010",
+        )
+        WithdrawalRequest.objects.create(
+            user=self.driver_one,
+            wallet=Wallet.objects.get_or_create(user=self.driver_one)[0],
+            fleet=self.fleet,
+            bank_account=bank_account,
+            amount=Decimal("25.00"),
+            fee_amount=Decimal("0.50"),
+            currency="GEL",
+            status=WithdrawalRequest.Status.PENDING,
+        )
+
+        response = self.client.get(reverse("owner-transactions"), HTTP_X_FLEET_NAME=self.fleet.name)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 2)
+        self.assertEqual(response.data[0]["transaction_type"], "Withdrawal")
+        self.assertEqual(response.data[0]["amount"], "25.00")
+        self.assertEqual(response.data[1]["transaction_type"], "Deposit")
+        self.assertEqual(response.data[1]["amount"], "90.00")
+
+
+class AdminNetworkSummaryApiTests(APITestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user(username="admin_network_summary", password="pass1234")
+        self.owner = User.objects.create_user(username="admin_network_owner", password="pass1234")
+        self.driver_one = User.objects.create_user(username="admin_network_driver_one", password="pass1234")
+        self.driver_two = User.objects.create_user(username="admin_network_driver_two", password="pass1234")
+        self.driver_three = User.objects.create_user(username="admin_network_driver_three", password="pass1234")
+        self.primary_fleet = Fleet.objects.create(name="Alpha Fleet")
+        self.secondary_fleet = Fleet.objects.create(name="Beta Fleet")
+
+        FleetPhoneBinding.objects.create(
+            fleet=self.primary_fleet,
+            user=self.admin,
+            phone_number="598955610",
+            role=FleetPhoneBinding.Role.ADMIN,
+            is_active=True,
+        )
+        FleetPhoneBinding.objects.create(
+            fleet=self.primary_fleet,
+            user=self.owner,
+            phone_number="598955611",
+            role=FleetPhoneBinding.Role.OWNER,
+            is_active=True,
+        )
+
+        self.client.force_authenticate(self.admin)
+
+    def test_admin_network_summary_returns_all_fleet_totals_and_sorted_withdrawals(self):
+        record_fleet_reserve_deposit(
+            fleet=self.primary_fleet,
+            amount=Decimal("120.00"),
+            created_by=self.admin,
+        )
+        record_fleet_reserve_deposit(
+            fleet=self.secondary_fleet,
+            amount=Decimal("80.00"),
+            created_by=self.owner,
+        )
+
+        primary_bank = BankAccount.objects.create(
+            user=self.driver_one,
+            bank_name="Bank of Georgia",
+            account_number="GE64BG00000000000201",
+            beneficiary_name="Driver One",
+            beneficiary_inn="01010101010",
+        )
+        secondary_bank = BankAccount.objects.create(
+            user=self.driver_two,
+            bank_name="Bank of Georgia",
+            account_number="GE64BG00000000000202",
+            beneficiary_name="Driver Two",
+            beneficiary_inn="02020202020",
+        )
+        tertiary_bank = BankAccount.objects.create(
+            user=self.driver_three,
+            bank_name="Bank of Georgia",
+            account_number="GE64BG00000000000203",
+            beneficiary_name="Driver Three",
+            beneficiary_inn="03030303030",
+        )
+
+        WithdrawalRequest.objects.create(
+            user=self.driver_one,
+            wallet=Wallet.objects.get_or_create(user=self.driver_one)[0],
+            fleet=self.primary_fleet,
+            bank_account=primary_bank,
+            amount=Decimal("30.00"),
+            fee_amount=Decimal("0.50"),
+            currency="GEL",
+            status=WithdrawalRequest.Status.COMPLETED,
+        )
+        WithdrawalRequest.objects.create(
+            user=self.driver_two,
+            wallet=Wallet.objects.get_or_create(user=self.driver_two)[0],
+            fleet=self.primary_fleet,
+            bank_account=secondary_bank,
+            amount=Decimal("20.00"),
+            fee_amount=Decimal("0.50"),
+            currency="GEL",
+            status=WithdrawalRequest.Status.COMPLETED,
+        )
+        WithdrawalRequest.objects.create(
+            user=self.driver_three,
+            wallet=Wallet.objects.get_or_create(user=self.driver_three)[0],
+            fleet=self.secondary_fleet,
+            bank_account=tertiary_bank,
+            amount=Decimal("40.00"),
+            fee_amount=Decimal("0.50"),
+            currency="GEL",
+            status=WithdrawalRequest.Status.COMPLETED,
+        )
+        WithdrawalRequest.objects.create(
+            user=self.driver_three,
+            wallet=Wallet.objects.get_or_create(user=self.driver_three)[0],
+            fleet=self.secondary_fleet,
+            bank_account=tertiary_bank,
+            amount=Decimal("10.00"),
+            fee_amount=Decimal("0.50"),
+            currency="GEL",
+            status=WithdrawalRequest.Status.PENDING,
+        )
+
+        response = self.client.get(reverse("admin-network-summary"), HTTP_X_FLEET_NAME=self.primary_fleet.name)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["total_funded"], "200.00")
+        self.assertEqual(response.data["total_withdrawn"], "100.00")
+        self.assertEqual(response.data["total_fees"], "2.00")
+        self.assertEqual(response.data["pending_payouts_count"], 1)
+        self.assertEqual(response.data["pending_payouts_total"], "10.00")
+        self.assertEqual(response.data["completed_withdrawal_transactions"], 4)
+        self.assertEqual(response.data["fleet_count"], Fleet.objects.count())
+        self.assertEqual(
+            response.data["active_fleet_count"],
+            Fleet.objects.filter(phone_bindings__is_active=True).distinct().count(),
+        )
+        self.assertEqual(response.data["withdrawn_by_fleet"][0]["fleet_name"], self.primary_fleet.name)
+        self.assertEqual(response.data["withdrawn_by_fleet"][0]["transaction_count"], 2)
+        self.assertEqual(response.data["withdrawn_by_fleet"][0]["total_withdrawn"], "50.00")
+        self.assertEqual(response.data["withdrawn_by_fleet"][1]["fleet_name"], self.secondary_fleet.name)
+        self.assertEqual(response.data["withdrawn_by_fleet"][1]["transaction_count"], 2)
+        self.assertEqual(response.data["withdrawn_by_fleet"][1]["total_withdrawn"], "50.00")
+        self.assertEqual(response.data["pending_by_fleet"][0]["fleet_name"], self.secondary_fleet.name)
+        self.assertEqual(response.data["pending_by_fleet"][0]["transaction_count"], 1)
+        self.assertEqual(response.data["pending_by_fleet"][0]["pending_total"], "10.00")
+        self.assertEqual(response.data["pending_by_fleet"][0]["reserve_balance"], "80.00")
+
+    def test_owner_cannot_access_admin_network_summary(self):
+        self.client.force_authenticate(self.owner)
+        response = self.client.get(reverse("admin-network-summary"), HTTP_X_FLEET_NAME=self.primary_fleet.name)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
 
@@ -742,10 +979,10 @@ class DriverWithdrawalApiTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(Decimal(response.data["fee_amount"]), Decimal("2.00"))
+        self.assertEqual(Decimal(response.data["fee_amount"]), Decimal("0.50"))
         withdrawal = WithdrawalRequest.objects.get(id=response.data["id"])
         self.assertEqual(withdrawal.fleet_id, self.fleet.id)
-        self.assertEqual(withdrawal.fee_amount, Decimal("2.00"))
+        self.assertEqual(withdrawal.fee_amount, Decimal("0.50"))
 
         driver_account = LedgerAccount.objects.get(
             user=self.driver,
@@ -758,10 +995,10 @@ class DriverWithdrawalApiTests(APITestCase):
         payout_clearing = get_or_create_payout_clearing_account()
         fee_account = get_or_create_platform_fee_account()
 
-        self.assertEqual(get_account_balance(driver_account), Decimal("10.00"))
-        self.assertEqual(get_account_balance(reserve_account), Decimal("68.00"))
+        self.assertEqual(get_account_balance(driver_account), Decimal("9.50"))
+        self.assertEqual(get_account_balance(reserve_account), Decimal("70.00"))
         self.assertEqual(get_account_balance(payout_clearing), Decimal("30.00"))
-        self.assertEqual(get_account_balance(fee_account), Decimal("2.00"))
+        self.assertEqual(get_account_balance(fee_account), Decimal("0.50"))
 
     def test_withdrawal_fails_when_driver_available_balance_is_too_low(self):
         self._fund_accounts(reserve_amount="100.00", available_amount="10.00")
@@ -778,8 +1015,64 @@ class DriverWithdrawalApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("driver available balance", response.data["detail"])
 
+    def test_withdrawal_with_empty_fleet_reserve_applies_rating_penalty(self):
+        self._fund_accounts(reserve_amount="0.00", available_amount="20.00")
+
+        response = self.client.post(
+            reverse("withdrawal-create"),
+            data={"bank_account_id": self.driver_bank_account.id, "amount": "10.00"},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+            HTTP_IDEMPOTENCY_KEY="driver-withdrawal-empty-reserve",
+            HTTP_X_REQUEST_ID="req-driver-withdrawal-empty-reserve",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("fleet reserve balance", response.data["detail"])
+        self.assertEqual(
+            FleetRatingPenalty.objects.filter(
+                fleet=self.fleet,
+                reason=FleetRatingPenalty.Reason.INSUFFICIENT_RESERVE,
+            ).count(),
+            1,
+        )
+
+        balance_response = self.client.get(reverse("wallet-balance"), HTTP_X_FLEET_NAME=self.fleet.name)
+        self.assertEqual(balance_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(balance_response.data["fleet_rating"], "-0.1")
+
+    def test_withdrawal_fails_when_amount_is_below_minimum(self):
+        self._fund_accounts(reserve_amount="100.00", available_amount="40.00")
+
+        response = self.client.post(
+            reverse("withdrawal-create"),
+            data={"bank_account_id": self.driver_bank_account.id, "amount": "0.49"},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+            HTTP_IDEMPOTENCY_KEY="driver-withdrawal-min",
+            HTTP_X_REQUEST_ID="req-driver-withdrawal-min",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Minimum withdrawal amount", str(response.data))
+
+    def test_withdrawal_fails_when_amount_is_above_maximum(self):
+        self._fund_accounts(reserve_amount="1000.00", available_amount="1000.00")
+
+        response = self.client.post(
+            reverse("withdrawal-create"),
+            data={"bank_account_id": self.driver_bank_account.id, "amount": "499.51"},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+            HTTP_IDEMPOTENCY_KEY="driver-withdrawal-max",
+            HTTP_X_REQUEST_ID="req-driver-withdrawal-max",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Maximum withdrawal amount", str(response.data))
+
     def test_withdrawal_fails_when_fleet_reserve_is_too_low(self):
-        self._fund_accounts(reserve_amount="20.00", available_amount="40.00")
+        self._fund_accounts(reserve_amount="18.00", available_amount="40.00")
 
         response = self.client.post(
             reverse("withdrawal-create"),
@@ -792,6 +1085,123 @@ class DriverWithdrawalApiTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("fleet reserve", response.data["detail"])
+
+    def test_withdrawal_is_rate_limited_for_five_minutes(self):
+        self._fund_accounts(reserve_amount="100.00", available_amount="100.00")
+
+        first = self.client.post(
+            reverse("withdrawal-create"),
+            data={"bank_account_id": self.driver_bank_account.id, "amount": "10.00"},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+            HTTP_IDEMPOTENCY_KEY="driver-withdrawal-cooldown-1",
+            HTTP_X_REQUEST_ID="req-driver-withdrawal-cooldown-1",
+        )
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+
+        second = self.client.post(
+            reverse("withdrawal-create"),
+            data={"bank_account_id": self.driver_bank_account.id, "amount": "5.00"},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+            HTTP_IDEMPOTENCY_KEY="driver-withdrawal-cooldown-2",
+            HTTP_X_REQUEST_ID="req-driver-withdrawal-cooldown-2",
+        )
+
+        self.assertEqual(second.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        self.assertIn("5 minutes", second.data["detail"])
+
+    def test_withdrawal_is_allowed_again_after_cooldown_window(self):
+        self._fund_accounts(reserve_amount="100.00", available_amount="100.00")
+
+        first = self.client.post(
+            reverse("withdrawal-create"),
+            data={"bank_account_id": self.driver_bank_account.id, "amount": "10.00"},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+            HTTP_IDEMPOTENCY_KEY="driver-withdrawal-cooldown-reset-1",
+            HTTP_X_REQUEST_ID="req-driver-withdrawal-cooldown-reset-1",
+        )
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+
+        withdrawal = WithdrawalRequest.objects.get(id=first.data["id"])
+        withdrawal.created_at = timezone.now() - timedelta(minutes=6)
+        withdrawal.save(update_fields=["created_at"])
+
+        second = self.client.post(
+            reverse("withdrawal-create"),
+            data={"bank_account_id": self.driver_bank_account.id, "amount": "5.00"},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+            HTTP_IDEMPOTENCY_KEY="driver-withdrawal-cooldown-reset-2",
+            HTTP_X_REQUEST_ID="req-driver-withdrawal-cooldown-reset-2",
+        )
+
+        self.assertEqual(second.status_code, status.HTTP_201_CREATED)
+
+
+class WalletFleetRatingTests(APITestCase):
+    def test_rating_starts_at_zero_and_grows_by_point_one_every_five_thousand_completed_withdrawals(self):
+        self.assertEqual(
+            _fleet_rating_from_completed_withdrawals(completed_withdrawals_count=0),
+            "0.0",
+        )
+        self.assertEqual(
+            _fleet_rating_from_completed_withdrawals(completed_withdrawals_count=4999),
+            "0.0",
+        )
+        self.assertEqual(
+            _fleet_rating_from_completed_withdrawals(completed_withdrawals_count=5000),
+            "0.1",
+        )
+        self.assertEqual(
+            _fleet_rating_from_completed_withdrawals(completed_withdrawals_count=10000),
+            "0.2",
+        )
+        self.assertEqual(
+            _fleet_rating_from_completed_withdrawals(completed_withdrawals_count=0, penalty_count=1),
+            "-0.1",
+        )
+
+    def test_driver_balance_includes_fleet_rating(self):
+        owner = User.objects.create_user(username="fleet_rating_owner", password="pass1234")
+        driver = User.objects.create_user(
+            username="fleet_rating_driver",
+            password="pass1234",
+            first_name="Demo",
+            last_name="Driver",
+        )
+        fleet = Fleet.objects.create(name="Rating Fleet")
+        FleetPhoneBinding.objects.create(
+            fleet=fleet,
+            user=owner,
+            phone_number="598955561",
+            role=FleetPhoneBinding.Role.OWNER,
+            is_active=True,
+        )
+        FleetPhoneBinding.objects.create(
+            fleet=fleet,
+            user=driver,
+            phone_number="598955562",
+            role=FleetPhoneBinding.Role.DRIVER,
+            is_active=True,
+        )
+        DriverFleetMembership.objects.create(
+            user=driver,
+            fleet=fleet,
+            yandex_external_driver_id="drv-rating-1",
+            is_active=True,
+        )
+        self.client.force_authenticate(driver)
+
+        response = self.client.get(reverse("wallet-balance"), HTTP_X_FLEET_NAME=fleet.name)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["fleet_rating"], "0.0")
+        self.assertEqual(response.data["fleet_completed_withdrawals"], 0)
+        self.assertEqual(response.data["driver_name"], "Demo Driver")
+        self.assertEqual(response.data["driver_level"], 1)
+        self.assertEqual(response.data["driver_reward"], "No reward yet")
 
 
 class WithdrawalListScopeTests(APITestCase):
@@ -857,6 +1267,8 @@ class WithdrawalListScopeTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         ids = {item["id"] for item in response.data}
         self.assertEqual(ids, {self.driver_one_withdrawal.id, self.driver_two_withdrawal.id})
+        names = {item["driver_name"] for item in response.data}
+        self.assertEqual(names, {"withdraw_list_driver_one", "withdraw_list_driver_two"})
 
     def test_driver_only_sees_own_withdrawals(self):
         self.client.force_authenticate(self.driver_one)
@@ -865,6 +1277,7 @@ class WithdrawalListScopeTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         ids = [item["id"] for item in response.data]
         self.assertEqual(ids, [self.driver_one_withdrawal.id])
+        self.assertEqual(response.data[0]["driver_name"], "withdraw_list_driver_one")
 
     def test_operator_can_see_withdrawal_created_by_driver_via_api(self):
         DriverFleetMembership.objects.create(

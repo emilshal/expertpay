@@ -871,7 +871,7 @@ class BankSimulatorApiTests(APITestCase):
         self.assertEqual(withdrawal.status, WithdrawalRequest.Status.COMPLETED)
 
         self.wallet.refresh_from_db()
-        self.assertEqual(self.wallet.balance, Decimal("90.00"))
+        self.assertEqual(self.wallet.balance, Decimal("89.50"))
 
     def test_failed_bank_sim_payout_reverses_wallet_balance(self):
         withdrawal_id = self._create_withdrawal(amount="20.00")
@@ -895,7 +895,7 @@ class BankSimulatorApiTests(APITestCase):
         self.assertEqual(withdrawal.status, WithdrawalRequest.Status.FAILED)
 
         self.wallet.refresh_from_db()
-        self.assertEqual(self.wallet.balance, Decimal("120.00"))
+        self.assertEqual(self.wallet.balance, Decimal("119.50"))
 
         account = LedgerAccount.objects.get(user=self.user)
         reversals = LedgerEntry.objects.filter(
@@ -1463,7 +1463,7 @@ class ReconciliationReportTests(APITestCase):
             fleet=self.fleet,
             bank_account=bank_account,
             amount=Decimal("25.00"),
-            fee_amount=Decimal("2.00"),
+            fee_amount=Decimal("0.50"),
             currency="GEL",
             status=WithdrawalRequest.Status.PENDING,
         )
@@ -1474,7 +1474,7 @@ class ReconciliationReportTests(APITestCase):
             fleet=self.fleet,
             user=self.driver,
             amount=Decimal("25.00"),
-            fee_amount=Decimal("2.00"),
+            fee_amount=Decimal("0.50"),
             created_by=self.owner,
             currency="GEL",
         )
@@ -1486,14 +1486,14 @@ class ReconciliationReportTests(APITestCase):
         self.assertEqual(response.data["treasury"]["expected_total"], "160.00")
         self.assertEqual(response.data["treasury"]["delta"], "0.00")
         self.assertEqual(response.data["treasury"]["status"], "OK")
-        self.assertEqual(response.data["fleet_reserves"]["total_balance"], "133.00")
+        self.assertEqual(response.data["fleet_reserves"]["total_balance"], "135.00")
         self.assertEqual(response.data["fleet_reserves"]["account_count"], 1)
-        self.assertEqual(response.data["driver_available"]["total_balance"], "5.00")
+        self.assertEqual(response.data["driver_available"]["total_balance"], "4.50")
         self.assertEqual(response.data["driver_available"]["account_count"], 1)
         self.assertEqual(response.data["payout_clearing"]["balance"], "25.00")
         self.assertEqual(response.data["payout_clearing"]["pending_withdrawals_count"], 1)
         self.assertEqual(response.data["payout_clearing"]["pending_withdrawals_total"], "25.00")
-        self.assertEqual(response.data["platform_fees"]["balance"], "2.00")
+        self.assertEqual(response.data["platform_fees"]["balance"], "0.50")
         self.assertEqual(response.data["deposits"]["matched_count"], 1)
         self.assertEqual(response.data["deposits"]["matched_total"], "160.00")
         self.assertEqual(response.data["deposits"]["unmatched_count"], 1)
@@ -1627,7 +1627,7 @@ class ReconciliationReportTests(APITestCase):
             fleet=self.fleet,
             bank_account=bank_account,
             amount=Decimal("30.00"),
-            fee_amount=Decimal("3.00"),
+            fee_amount=Decimal("0.50"),
             currency="GEL",
             status=WithdrawalRequest.Status.PENDING,
         )
@@ -1636,7 +1636,7 @@ class ReconciliationReportTests(APITestCase):
             fleet=self.fleet,
             user=self.driver,
             amount=Decimal("30.00"),
-            fee_amount=Decimal("3.00"),
+            fee_amount=Decimal("0.50"),
             created_by=self.owner,
             currency="GEL",
         )
@@ -2443,6 +2443,92 @@ class BogPayoutApiTests(APITestCase):
 
     @patch("integrations.services._bog_request")
     @patch("integrations.services._bog_missing_payout_env_vars")
+    def test_request_bog_payout_otp_uses_document_key(self, mocked_missing, mocked_request):
+        mocked_missing.return_value = []
+        mocked_request.side_effect = [
+            {
+                "ok": True,
+                "http_status": 200,
+                "body": [{"UniqueKey": 555001, "ResultCode": 0, "Match": 100}],
+            },
+            {
+                "ok": True,
+                "http_status": 200,
+                "body": {},
+            },
+        ]
+
+        withdrawal = self._create_withdrawal()
+        submit_response = self.client.post(
+            reverse("bog-submit"),
+            data={"withdrawal_id": withdrawal.id},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+        payout_id = submit_response.data["id"]
+
+        otp_response = self.client.post(
+            reverse("bog-request-otp", kwargs={"payout_id": payout_id}),
+            data={},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+
+        self.assertEqual(otp_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(otp_response.data["detail"], "OTP requested from Bank of Georgia.")
+        otp_call = mocked_request.call_args_list[1]
+        self.assertEqual(otp_call.kwargs["endpoint"], "/otp/request")
+        self.assertEqual(otp_call.kwargs["body"], {"ObjectKey": 555001, "ObjectType": 0})
+
+    @patch("integrations.services._bog_request")
+    @patch("integrations.services._bog_missing_payout_env_vars")
+    def test_sign_bog_payout_endpoint_completes_withdrawal(self, mocked_missing, mocked_request):
+        mocked_missing.return_value = []
+        mocked_request.side_effect = [
+            {
+                "ok": True,
+                "http_status": 200,
+                "body": [{"UniqueKey": 555002, "ResultCode": 0, "Match": 100}],
+            },
+            {
+                "ok": True,
+                "http_status": 200,
+                "body": {},
+            },
+            {
+                "ok": True,
+                "http_status": 200,
+                "body": {"Status": "P", "ResultCode": None, "Match": 100},
+            },
+        ]
+
+        withdrawal = self._create_withdrawal()
+        submit_response = self.client.post(
+            reverse("bog-submit"),
+            data={"withdrawal_id": withdrawal.id},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+        payout_id = submit_response.data["id"]
+
+        sign_response = self.client.post(
+            reverse("bog-sign", kwargs={"payout_id": payout_id}),
+            data={"otp": "123456"},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+
+        self.assertEqual(sign_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(sign_response.data["detail"], "BoG payout sign request submitted.")
+        self.assertEqual(sign_response.data["payout"]["status"], "settled")
+        sign_call = mocked_request.call_args_list[1]
+        self.assertEqual(sign_call.kwargs["endpoint"], "/sign/document")
+        self.assertEqual(sign_call.kwargs["body"], {"Otp": "123456", "ObjectKey": 555002})
+        withdrawal.refresh_from_db()
+        self.assertEqual(withdrawal.status, WithdrawalRequest.Status.COMPLETED)
+
+    @patch("integrations.services._bog_request")
+    @patch("integrations.services._bog_missing_payout_env_vars")
     def test_failed_bog_status_reverses_wallet_balance(self, mocked_missing, mocked_request):
         mocked_missing.return_value = []
         mocked_request.side_effect = [
@@ -2455,6 +2541,86 @@ class BogPayoutApiTests(APITestCase):
                 "ok": True,
                 "http_status": 200,
                 "body": {"Status": "Rejected", "ResultCode": 12, "Match": 1},
+            },
+        ]
+
+        withdrawal = self._create_withdrawal(amount="30.00")
+        submit_response = self.client.post(
+            reverse("bog-submit"),
+            data={"withdrawal_id": withdrawal.id},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+        payout_id = submit_response.data["id"]
+
+        status_response = self.client.post(
+            reverse("bog-status-sync", kwargs={"payout_id": payout_id}),
+            data={},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+
+        self.assertEqual(status_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(status_response.data["status"], "failed")
+        withdrawal.refresh_from_db()
+        self.assertEqual(withdrawal.status, WithdrawalRequest.Status.FAILED)
+        driver_account = get_or_create_driver_available_account(self.driver, fleet=self.fleet, currency="GEL")
+        fleet_reserve_account = get_or_create_fleet_reserve_account(self.fleet, currency="GEL")
+        self.assertEqual(get_account_balance(driver_account), Decimal("150.00"))
+        self.assertEqual(get_account_balance(fleet_reserve_account), Decimal("200.00"))
+
+    @patch("integrations.services._bog_request")
+    @patch("integrations.services._bog_missing_payout_env_vars")
+    def test_letter_completed_bog_status_marks_withdrawal_completed(self, mocked_missing, mocked_request):
+        mocked_missing.return_value = []
+        mocked_request.side_effect = [
+            {
+                "ok": True,
+                "http_status": 200,
+                "body": [{"UniqueKey": 777001, "ResultCode": 0, "Match": 100}],
+            },
+            {
+                "ok": True,
+                "http_status": 200,
+                "body": {"Status": "P", "ResultCode": None, "Match": 100},
+            },
+        ]
+
+        withdrawal = self._create_withdrawal(amount="30.00")
+        submit_response = self.client.post(
+            reverse("bog-submit"),
+            data={"withdrawal_id": withdrawal.id},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+        payout_id = submit_response.data["id"]
+
+        status_response = self.client.post(
+            reverse("bog-status-sync", kwargs={"payout_id": payout_id}),
+            data={},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+        )
+
+        self.assertEqual(status_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(status_response.data["status"], "settled")
+        withdrawal.refresh_from_db()
+        self.assertEqual(withdrawal.status, WithdrawalRequest.Status.COMPLETED)
+
+    @patch("integrations.services._bog_request")
+    @patch("integrations.services._bog_missing_payout_env_vars")
+    def test_letter_rejected_bog_status_reverses_wallet_balance(self, mocked_missing, mocked_request):
+        mocked_missing.return_value = []
+        mocked_request.side_effect = [
+            {
+                "ok": True,
+                "http_status": 200,
+                "body": [{"UniqueKey": 777002, "ResultCode": 0, "Match": 100}],
+            },
+            {
+                "ok": True,
+                "http_status": 200,
+                "body": {"Status": "R", "ResultCode": 12, "Match": 100},
             },
         ]
 
@@ -3042,6 +3208,14 @@ class BogDepositSyncServiceTests(APITestCase):
 class BogCardOrderServiceTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="card_sync_user", password="pass1234")
+        self.fleet = Fleet.objects.create(name="Card Sync Fleet")
+        FleetPhoneBinding.objects.create(
+            fleet=self.fleet,
+            user=self.user,
+            phone_number="598900222",
+            role=FleetPhoneBinding.Role.ADMIN,
+            is_active=True,
+        )
         self.connection = ProviderConnection.objects.create(
             user=self.user,
             provider=ProviderConnection.Provider.BOG_PAYMENTS,
@@ -3051,7 +3225,7 @@ class BogCardOrderServiceTests(APITestCase):
         )
 
     @patch("integrations.services._bog_payments_request")
-    def test_sync_bog_card_order_completed_credits_wallet(self, mocked_request):
+    def test_sync_bog_card_order_completed_credits_fleet_reserve(self, mocked_request):
         mocked_request.return_value = {
             "ok": True,
             "http_status": 200,
@@ -3068,6 +3242,7 @@ class BogCardOrderServiceTests(APITestCase):
         order = BogCardOrder.objects.create(
             connection=self.connection,
             user=self.user,
+            fleet=self.fleet,
             provider_order_id="card-order-1001",
             external_order_id="cardtopup-1001",
             amount=Decimal("32.40"),
@@ -3081,8 +3256,18 @@ class BogCardOrderServiceTests(APITestCase):
         self.assertEqual(synced.transaction_id, "txn-1001")
         self.assertEqual(synced.transfer_method, "card")
 
-        wallet = Wallet.objects.get(user=self.user)
-        self.assertEqual(wallet.balance, Decimal("32.40"))
-        deposit = Deposit.objects.get(user=self.user, provider="bog_card")
+        deposit = Deposit.objects.get(fleet=self.fleet, provider="bog_card")
         self.assertEqual(deposit.provider_transaction_id, "card-order-1001")
         self.assertEqual(deposit.amount, Decimal("32.40"))
+
+        reserve_account = LedgerAccount.objects.get(
+            fleet=self.fleet,
+            account_type=LedgerAccount.AccountType.FLEET_RESERVE,
+        )
+        treasury_account = LedgerAccount.objects.get(
+            account_type=LedgerAccount.AccountType.TREASURY,
+            user=None,
+            fleet=None,
+        )
+        self.assertEqual(get_account_balance(reserve_account), Decimal("32.40"))
+        self.assertEqual(get_account_balance(treasury_account), Decimal("32.40"))

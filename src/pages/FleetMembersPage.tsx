@@ -8,8 +8,10 @@ import {
   type Fleet,
   type FleetMember
 } from "../lib/api";
+import { useI18n } from "../lib/i18n";
 
 export default function FleetMembersPage() {
+  const { pick } = useI18n();
   const [fleetList, setFleetList] = useState<Fleet[]>([]);
   const [selectedFleet, setSelectedFleet] = useState(getActiveFleetName() ?? "");
   const [members, setMembers] = useState<FleetMember[]>([]);
@@ -41,9 +43,9 @@ export default function FleetMembersPage() {
     } catch (err) {
       const text = err instanceof Error ? err.message : "";
       if (text.includes("Only fleet admin/owner")) {
-        setError("Only fleet admin/owner can manage member roles.");
+        setError(pick("Only fleet admin/owner can manage member roles.", "წევრების როლების მართვა მხოლოდ ფლიტის ადმინს ან მფლობელს შეუძლია."));
       } else {
-        setError("Unable to load fleet members.");
+        setError(pick("Unable to load fleet members.", "ფლიტის წევრები ვერ ჩაიტვირთა."));
       }
       setMembers([]);
       setDraftRoles({});
@@ -65,16 +67,16 @@ export default function FleetMembersPage() {
         phone_number: member.phone_number,
         role: nextRole
       });
-      setMessage(`Updated ${member.phone_number} to ${nextRole}.`);
+      setMessage(pick(`Updated ${member.phone_number} to ${nextRole}.`, `${member.phone_number}-ის როლი შეიცვალა: ${nextRole}.`));
       await loadMembers();
     } catch (err) {
       const text = err instanceof Error ? err.message : "";
       if (text.includes("Only fleet admin/owner")) {
-        setError("Only fleet admin/owner can change roles.");
+        setError(pick("Only fleet admin/owner can change roles.", "როლების შეცვლა მხოლოდ ფლიტის ადმინს ან მფლობელს შეუძლია."));
       } else if (text.includes("owner")) {
-        setError("Owner role can only be changed by owner.");
+        setError(pick("Owner role can only be changed by owner.", "Owner-ის როლის შეცვლა მხოლოდ owner-ს შეუძლია."));
       } else {
-        setError("Could not update member role.");
+        setError(pick("Could not update member role.", "წევრის როლის განახლება ვერ მოხერხდა."));
       }
     } finally {
       setSavingMemberId(null);
@@ -96,12 +98,12 @@ export default function FleetMembersPage() {
   return (
     <section className="card">
       <div className="cardTitleRow">
-        <h1>Fleet Members</h1>
+        <h1>{pick("Fleet Members", "ფლიტის წევრები")}</h1>
       </div>
 
       <div className="transferForm">
         <label className="transferField">
-          <span className="transferLabel">Fleet</span>
+          <span className="transferLabel">{pick("Fleet", "ფლიტი")}</span>
           <span className="transferSelectWrap">
             <select
               className="transferInput"
@@ -111,7 +113,7 @@ export default function FleetMembersPage() {
                 if (event.target.value) setActiveFleetName(event.target.value);
               }}
             >
-              <option value="">Select fleet</option>
+              <option value="">{pick("Select fleet", "აირჩიეთ ფლიტი")}</option>
               {fleetList.map((fleet) => (
                 <option key={fleet.id} value={fleet.name}>
                   {fleet.name}
@@ -122,7 +124,7 @@ export default function FleetMembersPage() {
         </label>
 
         <button className="btn btnGhost" type="button" onClick={() => void loadMembers()}>
-          {loading ? "Loading..." : "Refresh Members"}
+          {loading ? pick("Loading...", "იტვირთება...") : pick("Refresh Members", "წევრების განახლება")}
         </button>
       </div>
 
@@ -134,7 +136,8 @@ export default function FleetMembersPage() {
           <div className="txRow" role="listitem">
             <div className="txMain">
               <div className="txTitle">No members loaded</div>
-              <div className="txSub">Select a fleet and refresh.</div>
+              <div className="txTitle">{pick("No members loaded", "წევრები არ ჩაიტვირთა")}</div>
+              <div className="txSub">{pick("Select a fleet and refresh.", "აირჩიეთ ფლიტი და განაახლეთ.")}</div>
             </div>
           </div>
         ) : (
@@ -147,7 +150,7 @@ export default function FleetMembersPage() {
                     : member.username}
                 </div>
                 <div className="txSub">
-                  {member.phone_number} | @{member.username} | {member.is_active ? "active" : "inactive"}
+                  {member.phone_number} | @{member.username} | {member.is_active ? pick("active", "აქტიური") : pick("inactive", "არააქტიური")}
                 </div>
               </div>
               <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
@@ -174,7 +177,7 @@ export default function FleetMembersPage() {
                   onClick={() => void saveRole(member)}
                   disabled={savingMemberId === member.id}
                 >
-                  {savingMemberId === member.id ? "Saving..." : "Save"}
+                  {savingMemberId === member.id ? pick("Saving...", "ინახება...") : pick("Save", "შენახვა")}
                 </button>
               </div>
             </div>

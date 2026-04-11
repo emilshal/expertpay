@@ -1,6 +1,7 @@
 from django.db import models
 
 from django.conf import settings
+from accounts.models import Fleet
 from wallet.models import WithdrawalRequest
 
 
@@ -213,6 +214,13 @@ class BogCardOrder(models.Model):
 
     connection = models.ForeignKey(ProviderConnection, on_delete=models.CASCADE, related_name="bog_card_orders")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="bog_card_orders")
+    fleet = models.ForeignKey(
+        Fleet,
+        on_delete=models.SET_NULL,
+        related_name="bog_card_orders",
+        null=True,
+        blank=True,
+    )
     provider_order_id = models.CharField(max_length=120, unique=True)
     external_order_id = models.CharField(max_length=120, db_index=True)
     parent_order_id = models.CharField(max_length=120, blank=True)

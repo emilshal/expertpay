@@ -14,6 +14,7 @@ import {
   type YandexSyncRun,
   type YandexTransactionRecord
 } from "../lib/api";
+import { useI18n } from "../lib/i18n";
 
 function displayDriverName(driver: YandexDriverSummary["driver"]) {
   const name = `${driver.first_name} ${driver.last_name}`.trim();
@@ -21,6 +22,7 @@ function displayDriverName(driver: YandexDriverSummary["driver"]) {
 }
 
 export default function YandexOpsPage() {
+  const { pick } = useI18n();
   const [categories, setCategories] = useState<YandexCategory[]>([]);
   const [driverSummaries, setDriverSummaries] = useState<YandexDriverSummary[]>([]);
   const [transactions, setTransactions] = useState<YandexTransactionRecord[]>([]);
@@ -50,7 +52,7 @@ export default function YandexOpsPage() {
       setEvents(eventRows);
       setRuns(syncRuns);
     } catch {
-      setError("Unable to load Yandex data.");
+      setError(pick("Unable to load Yandex data.", "Yandex მონაცემები ვერ ჩაიტვირთა."));
     } finally {
       setLoading(false);
     }
@@ -62,7 +64,7 @@ export default function YandexOpsPage() {
       const detail = await yandexDriverDetail(externalDriverId);
       setSelectedDriver(detail);
     } catch {
-      setError("Unable to load driver detail.");
+      setError(pick("Unable to load driver detail.", "მძღოლის დეტალები ვერ ჩაიტვირთა."));
     } finally {
       setSelectedDriverId("");
     }
@@ -80,13 +82,13 @@ export default function YandexOpsPage() {
         detail?: string;
       };
       setMessage(
-        `${payload.detail ?? "Category sync finished"} (fetched ${payload.fetched ?? 0}, upserted ${
+        `${payload.detail ?? pick("Category sync finished", "კატეგორიების სინქი დასრულდა")} (${pick("fetched", "მოწოდებული")} ${payload.fetched ?? 0}, ${pick("upserted", "განახლებული")} ${
           payload.upserted ?? 0
         })`
       );
       await loadAll();
     } catch {
-      setError("Category sync failed.");
+      setError(pick("Category sync failed.", "კატეგორიების სინქი ვერ შესრულდა."));
     } finally {
       setSyncingCategories(false);
     }
@@ -100,17 +102,17 @@ export default function YandexOpsPage() {
     <section className="card">
       <div className="cardTitleRow">
         <div>
-          <h1>Yandex Data</h1>
+          <h1>{pick("Yandex Data", "Yandex მონაცემები")}</h1>
           <p className="statusHint" style={{ marginTop: "6px" }}>
-            Browse synced drivers, normalized transactions, raw events, categories, and recent sync runs.
+            {pick("Browse synced drivers, normalized transactions, raw events, categories, and recent sync runs.", "დაათვალიერეთ დასინქული მძღოლები, ნორმალიზებული ტრანზაქციები, ნედლი მოვლენები, კატეგორიები და ბოლო სინქის გაშვებები.")}
           </p>
         </div>
         <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "flex-end" }}>
           <button className="btn btnGhost" type="button" onClick={() => void loadAll()}>
-            {loading ? "Loading..." : "Refresh"}
+            {loading ? pick("Loading...", "იტვირთება...") : pick("Refresh", "განახლება")}
           </button>
           <button className="btn btnPrimary" type="button" onClick={() => void runCategorySync()}>
-            {syncingCategories ? "Syncing..." : "Sync Categories"}
+            {syncingCategories ? pick("Syncing...", "სინქდება...") : pick("Sync Categories", "კატეგორიების სინქი")}
           </button>
         </div>
       </div>

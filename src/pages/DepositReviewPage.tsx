@@ -9,8 +9,10 @@ import {
   type Fleet,
   type IncomingBankTransferItem
 } from "../lib/api";
+import { useI18n } from "../lib/i18n";
 
 export default function DepositReviewPage() {
+  const { pick } = useI18n();
   const [fleetList, setFleetList] = useState<Fleet[]>([]);
   const [selectedFleet, setSelectedFleet] = useState(getActiveFleetName() ?? "");
   const [transfers, setTransfers] = useState<IncomingBankTransferItem[]>([]);
@@ -42,9 +44,9 @@ export default function DepositReviewPage() {
     } catch (err) {
       const text = err instanceof Error ? err.message : "";
       if (text.includes("Only admin/owner")) {
-        setError("Only fleet admin/owner can review unmatched deposits.");
+        setError(pick("Only fleet admin/owner can review unmatched deposits.", "დაუდგენელი შევსებების განხილვა მხოლოდ ფლიტის ადმინს ან მფლობელს შეუძლია."));
       } else {
-        setError("Unable to load unmatched bank transfers right now.");
+        setError(pick("Unable to load unmatched bank transfers right now.", "დაუდგენელი საბანკო გადარიცხვები ახლა ვერ ჩაიტვირთა."));
       }
       setTransfers([]);
     } finally {
@@ -71,18 +73,21 @@ export default function DepositReviewPage() {
     try {
       const result = await syncDeposits();
       setMessage(
-        `Checked ${result.checked_count} item(s), left ${result.unmatched_count} unmatched, credited ${result.credited_count}.`
+        pick(
+          `Checked ${result.checked_count} item(s), left ${result.unmatched_count} unmatched, credited ${result.credited_count}.`,
+          `შემოწმდა ${result.checked_count} ჩანაწერი, დაუდგენელი დარჩა ${result.unmatched_count}, ჩაირიცხა ${result.credited_count}.`
+        )
       );
       await loadQueue();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Bank sync failed.");
+      setError(err instanceof Error ? err.message : pick("Bank sync failed.", "საბანკო სინქი ვერ შესრულდა."));
       setLoading(false);
     }
   }
 
   async function runBackfill() {
     if (!backfillStartDate || !backfillEndDate) {
-      setError("Choose both a start date and end date before running a recovery sync.");
+      setError(pick("Choose both a start date and end date before running a recovery sync.", "აღდგენის სინქამდე აირჩიეთ დაწყების და დასრულების თარიღები."));
       return;
     }
     setLoading(true);
@@ -91,15 +96,18 @@ export default function DepositReviewPage() {
     try {
       const result = await syncDeposits({ start_date: backfillStartDate, end_date: backfillEndDate });
       setMessage(
-        `Backfill checked ${result.checked_count} transfer(s) from ${backfillStartDate} to ${backfillEndDate}, matched ${result.matched_count}, credited ${result.credited_count}, and left ${result.unmatched_count} for review.`
+        pick(
+          `Backfill checked ${result.checked_count} transfer(s) from ${backfillStartDate} to ${backfillEndDate}, matched ${result.matched_count}, credited ${result.credited_count}, and left ${result.unmatched_count} for review.`,
+          `Backfill-მა ${backfillStartDate}-დან ${backfillEndDate}-მდე შეამოწმა ${result.checked_count} გადარიცხვა, დაამთხვია ${result.matched_count}, ჩარიცხა ${result.credited_count} და განხილვაში დატოვა ${result.unmatched_count}.`
+        )
       );
       await loadQueue();
     } catch (err) {
       const text = err instanceof Error ? err.message : "";
       if (text.includes("Both start_date and end_date")) {
-        setError("Choose both a start date and end date before running a recovery sync.");
+        setError(pick("Choose both a start date and end date before running a recovery sync.", "აღდგენის სინქამდე აირჩიეთ დაწყების და დასრულების თარიღები."));
       } else {
-        setError("Backfill failed. Please check the date range and try again.");
+        setError(pick("Backfill failed. Please check the date range and try again.", "Backfill ვერ შესრულდა. შეამოწმეთ თარიღები და სცადეთ თავიდან."));
       }
       setLoading(false);
     }
@@ -114,14 +122,14 @@ export default function DepositReviewPage() {
         transfer_id: transfer.id,
         fleet_name: selectedFleet
       });
-      setMessage(`Matched ${transfer.amount} ${transfer.currency} to ${selectedFleet}.`);
+      setMessage(pick(`Matched ${transfer.amount} ${transfer.currency} to ${selectedFleet}.`, `${transfer.amount} ${transfer.currency} მიება ფლიტს ${selectedFleet}.`));
       await loadQueue();
     } catch (err) {
       const text = err instanceof Error ? err.message : "";
       if (text.includes("already finalized")) {
-        setError("That transfer was already handled.");
+        setError(pick("That transfer was already handled.", "ეს გადარიცხვა უკვე დამუშავდა."));
       } else {
-        setError("Could not match this transfer.");
+        setError(pick("Could not match this transfer.", "ამ გადარიცხვის მიბმა ვერ მოხერხდა."));
       }
     } finally {
       setSavingTransferId(null);
@@ -131,19 +139,22 @@ export default function DepositReviewPage() {
   return (
     <section className="card">
       <div className="cardTitleRow">
-        <h1>Deposit Review</h1>
+        <h1>{pick("Deposit Review", "შევსებების განხილვა")}</h1>
         <button className="btn btnGhost" type="button" onClick={() => void refreshBankActivity()}>
-          {loading ? "Syncing..." : "Sync from BoG"}
+          {loading ? pick("Syncing...", "სინქდება...") : pick("Sync from BoG", "BoG-დან სინქი")}
         </button>
       </div>
 
       <p className="muted">
-        Manual review is used only when a bank transfer arrives without a clean fleet reference code or needs confirmation before reserve crediting.
+        {pick(
+          "Manual review is used only when a bank transfer arrives without a clean fleet reference code or needs confirmation before reserve crediting.",
+          "ხელით განხილვა გამოიყენება მხოლოდ მაშინ, როცა საბანკო გადარიცხვა მოდის მკაფიო ფლიტის კოდის გარეშე ან რეზერვზე ჩარიცხვამდე დამატებითი დადასტურება სჭირდება."
+        )}
       </p>
 
       <div className="transferForm">
         <label className="transferField">
-          <span className="transferLabel">Fleet</span>
+          <span className="transferLabel">{pick("Fleet", "ფლიტი")}</span>
           <span className="transferSelectWrap">
             <select
               className="transferInput"
@@ -153,7 +164,7 @@ export default function DepositReviewPage() {
                 if (event.target.value) setActiveFleetName(event.target.value);
               }}
             >
-              <option value="">Select fleet</option>
+              <option value="">{pick("Select fleet", "აირჩიეთ ფლიტი")}</option>
               {fleetList.map((fleet) => (
                 <option key={fleet.id} value={fleet.name}>
                   {fleet.name}
@@ -164,18 +175,18 @@ export default function DepositReviewPage() {
         </label>
 
         <button className="btn btnGhost" type="button" onClick={() => void loadQueue()}>
-          {loading ? "Refreshing..." : "Refresh Queue"}
+          {loading ? pick("Refreshing...", "ახლდება...") : pick("Refresh Queue", "რიგის განახლება")}
         </button>
       </div>
 
       <div className="card" style={{ marginTop: 14 }}>
         <div className="cardTitleRow">
-          <h2 className="h2">Recover missed transfers</h2>
+          <h2 className="h2">{pick("Recover missed transfers", "გამოტოვებული გადარიცხვების აღდგენა")}</h2>
         </div>
-        <p className="muted">Use a date range backfill when a transfer is missing from the normal BoG activity sync.</p>
+        <p className="muted">{pick("Use a date range backfill when a transfer is missing from the normal BoG activity sync.", "გამოიყენეთ თარიღების დიაპაზონი, როცა გადარიცხვა ჩვეულებრივ BoG სინქში არ ჩანს.")}</p>
         <div className="transferForm">
           <label className="transferField">
-            <span className="transferLabel">Start date</span>
+            <span className="transferLabel">{pick("Start date", "დაწყების თარიღი")}</span>
             <input
               className="transferInput"
               type="date"
@@ -184,7 +195,7 @@ export default function DepositReviewPage() {
             />
           </label>
           <label className="transferField">
-            <span className="transferLabel">End date</span>
+            <span className="transferLabel">{pick("End date", "დასრულების თარიღი")}</span>
             <input
               className="transferInput"
               type="date"
@@ -193,7 +204,7 @@ export default function DepositReviewPage() {
             />
           </label>
           <button className="btn btnGhost" type="button" onClick={() => void runBackfill()}>
-            {loading ? "Running..." : "Run backfill"}
+            {loading ? pick("Running...", "მუშაობს...") : pick("Run backfill", "Backfill-ის გაშვება")}
           </button>
         </div>
       </div>
@@ -204,11 +215,11 @@ export default function DepositReviewPage() {
       <div className="mappingStats">
         <div className="mappingStat">
           <span className="mappingStatValue">{transfers.length}</span>
-          <span className="mappingStatLabel">Awaiting review</span>
+          <span className="mappingStatLabel">{pick("Awaiting review", "ელოდება განხილვას")}</span>
         </div>
         <div className="mappingStat">
-          <span className="mappingStatValue">{selectedFleet || "No fleet"}</span>
-          <span className="mappingStatLabel">Current review scope</span>
+          <span className="mappingStatValue">{selectedFleet || pick("No fleet", "ფლიტი არ არის")}</span>
+          <span className="mappingStatLabel">{pick("Current review scope", "მიმდინარე განხილვის არე")}</span>
         </div>
       </div>
 
@@ -216,8 +227,8 @@ export default function DepositReviewPage() {
         {transfers.length === 0 ? (
           <div className="txRow" role="listitem">
             <div className="txMain">
-              <div className="txTitle">No unmatched transfers</div>
-              <div className="txSub">Incoming transfers with missing or incorrect references will appear here.</div>
+              <div className="txTitle">{pick("No unmatched transfers", "დაუდგენელი გადარიცხვები არ არის")}</div>
+              <div className="txSub">{pick("Incoming transfers with missing or incorrect references will appear here.", "აქ გამოჩნდება შემოსული გადარიცხვები, რომლებსაც კოდი აკლიათ ან არასწორი კოდით მოვიდა.")}</div>
             </div>
           </div>
         ) : (
@@ -227,10 +238,10 @@ export default function DepositReviewPage() {
                 <div className="txTitle">
                   {transfer.amount} {transfer.currency}
                 </div>
-                <div className="txSub">{transfer.payer_name || "Unknown payer"}</div>
-                <div className="txSub">Bank comment: {transfer.reference_text || "No reference provided"}</div>
+                <div className="txSub">{transfer.payer_name || pick("Unknown payer", "უცნობი გადამხდელი")}</div>
+                <div className="txSub">{pick("Bank comment", "ბანკის კომენტარი")}: {transfer.reference_text || pick("No reference provided", "კოდი არ არის მითითებული")}</div>
                 <div className="txSub">
-                  Source: {transfer.sync_source === "backfill" ? "Recovered by backfill" : "Normal bank sync"}
+                  {pick("Source", "წყარო")}: {transfer.sync_source === "backfill" ? pick("Recovered by backfill", "აღმოჩენილია backfill-ით") : pick("Normal bank sync", "ჩვეულებრივი საბანკო სინქი")}
                 </div>
                 <div className="txSub">
                   {transfer.booking_date || transfer.value_date || transfer.created_at}
@@ -244,7 +255,7 @@ export default function DepositReviewPage() {
                   onClick={() => void matchTransfer(transfer)}
                   disabled={savingTransferId === transfer.id || !selectedFleet}
                 >
-                  {savingTransferId === transfer.id ? "Crediting..." : "Credit to fleet reserve"}
+                  {savingTransferId === transfer.id ? pick("Crediting...", "ირიცხება...") : pick("Credit to fleet reserve", "ფლიტის რეზერვზე ჩარიცხვა")}
                 </button>
               </div>
             </div>

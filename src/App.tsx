@@ -16,8 +16,10 @@ import FleetMembersPage from "./pages/FleetMembersPage";
 import DriverMappingsPage from "./pages/DriverMappingsPage";
 import LoginPage from "./pages/LoginPage";
 import { clearTokens, getAccessToken, getActiveRole, getIsPlatformAdmin, me } from "./lib/api";
+import { useI18n } from "./lib/i18n";
 
 export default function App() {
+  const { pick } = useI18n();
   const [isChecking, setIsChecking] = useState(true);
   const [isAuthed, setAuthed] = useState(false);
   const [role, setRole] = useState<"driver" | "operator" | "admin" | "owner" | null>(getActiveRole());
@@ -57,7 +59,7 @@ export default function App() {
       <div className="app">
         <main className="main">
           <section className="card">
-            <p>Checking session...</p>
+            <p>{pick("Checking session...", "სესია მოწმდება...")}</p>
           </section>
         </main>
       </div>

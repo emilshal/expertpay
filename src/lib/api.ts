@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
+const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
 const ACCESS_TOKEN_KEY = "expertpay_access_token";
 const REFRESH_TOKEN_KEY = "expertpay_refresh_token";
@@ -199,6 +199,11 @@ export type WalletBalance = {
   balance: string;
   currency: string;
   updated_at: string;
+  fleet_rating?: string;
+  fleet_completed_withdrawals?: number;
+  driver_name?: string;
+  driver_level?: number;
+  driver_reward?: string;
 };
 
 export type DepositInstruction = {
@@ -277,6 +282,7 @@ export type WithdrawalItem = {
   status: "pending" | "processing" | "completed" | "failed";
   note: string;
   fleet_name?: string;
+  driver_name: string;
   bank_account: BankAccount;
   created_at: string;
 };
@@ -306,6 +312,54 @@ export type OwnerFleetSummary = {
   failed_payouts_total: string;
   active_drivers_count: number;
   pending_payouts: OwnerPendingPayout[];
+};
+
+export type OwnerDriverFinanceRow = {
+  id: number;
+  first_name: string;
+  last_name: string;
+  phone_number: string;
+  transaction_count: number;
+  available_balance: string;
+  currency: string;
+  created_at: string;
+};
+
+export type OwnerTransactionRow = {
+  id: string;
+  transaction_type: string;
+  amount: string;
+  currency: string;
+  created_at: string;
+};
+
+export type AdminWithdrawnFleetItem = {
+  fleet_id: number;
+  fleet_name: string;
+  transaction_count: number;
+  total_withdrawn: string;
+};
+
+export type AdminPendingFleetItem = {
+  fleet_id: number;
+  fleet_name: string;
+  transaction_count: number;
+  pending_total: string;
+  reserve_balance: string;
+};
+
+export type AdminNetworkSummary = {
+  currency: string;
+  total_funded: string;
+  total_withdrawn: string;
+  total_fees: string;
+  pending_payouts_count: number;
+  pending_payouts_total: string;
+  fleet_count: number;
+  active_fleet_count: number;
+  completed_withdrawal_transactions: number;
+  withdrawn_by_fleet: AdminWithdrawnFleetItem[];
+  pending_by_fleet: AdminPendingFleetItem[];
 };
 
 export type PlatformEarningsFleetItem = {
@@ -490,8 +544,14 @@ export type BogPayout = {
   updated_at: string;
 };
 
+export type BogPayoutActionResult = {
+  detail: string;
+  payout: BogPayout;
+};
+
 export type BogCardOrder = {
   id: number;
+  fleet_name?: string;
   provider_order_id: string;
   external_order_id: string;
   parent_order_id: string;
@@ -710,6 +770,18 @@ export async function walletBalance() {
 
 export async function ownerFleetSummary() {
   return request<OwnerFleetSummary>("/api/wallet/owner-summary/");
+}
+
+export async function ownerDriverFinanceRows() {
+  return request<OwnerDriverFinanceRow[]>("/api/wallet/owner-driver-finance/");
+}
+
+export async function ownerTransactionRows() {
+  return request<OwnerTransactionRow[]>("/api/wallet/owner-transactions/");
+}
+
+export async function adminNetworkSummary() {
+  return request<AdminNetworkSummary>("/api/wallet/admin-network-summary/");
 }
 
 export async function platformEarningsSummary() {
@@ -1018,6 +1090,22 @@ export async function syncBogPayoutStatus(payout_id: number) {
   return request<BogPayout>(`/api/integrations/bog/payouts/${payout_id}/status/`, {
     method: "POST",
     body: JSON.stringify({}),
+    idempotent: true
+  });
+}
+
+export async function requestBogPayoutOtp(payout_id: number) {
+  return request<BogPayoutActionResult>(`/api/integrations/bog/payouts/${payout_id}/otp/request/`, {
+    method: "POST",
+    body: JSON.stringify({}),
+    idempotent: true
+  });
+}
+
+export async function signBogPayout(payout_id: number, otp: string) {
+  return request<BogPayoutActionResult>(`/api/integrations/bog/payouts/${payout_id}/sign/`, {
+    method: "POST",
+    body: JSON.stringify({ otp }),
     idempotent: true
   });
 }

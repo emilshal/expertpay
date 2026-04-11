@@ -371,12 +371,12 @@ Operator sequence:
 5. Submit one small driver withdrawal
    - Driver login: make sure a bank account is saved
    - In `My Wallet`, request a small withdrawal less than or equal to:
-     - driver available balance
-     - fleet reserve minus fleet-paid fee
+     - driver available balance minus the fixed withdrawal fee
+     - fleet reserve
    - Expected state immediately after submit:
      - withdrawal appears as `Requested` or `Processing`
-     - driver available balance drops by principal only
-     - fleet reserve is held for principal plus fee
+     - driver available balance drops by principal plus fee
+     - fleet reserve is held for principal only
 
 6. Send or poll the BoG payout
    - Owner/admin only: open `Payouts`
@@ -405,10 +405,10 @@ Operator sequence:
    - Owner/admin only: open `Reconciliation`
    - Verify:
      - treasury status is `OK`
-     - fleet reserve reflects deposit minus payout minus fleet fee
-     - driver available reflects earnings minus successful/pending withdrawal principal
+     - fleet reserve reflects deposit minus payout principal
+     - driver available reflects earnings minus successful/pending withdrawal principal and fee
      - payout clearing is zero after final settlement, or equals pending payouts if still open
-     - platform fees reflect the fleet-paid withdrawal fee
+     - platform fees reflect the fixed withdrawal fees charged to drivers
 
 8. If something looks wrong
    - Re-run the fleet-scoped smoke sync:

@@ -88,6 +88,29 @@ class WithdrawalRequest(models.Model):
         return f"Withdrawal<{self.user_id}> {self.amount} {self.currency} ({self.status})"
 
 
+class FleetRatingPenalty(models.Model):
+    class Reason(models.TextChoices):
+        INSUFFICIENT_RESERVE = "insufficient_reserve", "Insufficient Reserve"
+
+    fleet = models.ForeignKey(Fleet, on_delete=models.CASCADE, related_name="rating_penalties")
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="fleet_rating_penalties",
+        null=True,
+        blank=True,
+    )
+    reason = models.CharField(max_length=32, choices=Reason.choices, default=Reason.INSUFFICIENT_RESERVE)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self):
+        return f"FleetRatingPenalty<{self.fleet_id}> {self.reason}"
+
+
 class IncomingBankTransfer(models.Model):
     class MatchStatus(models.TextChoices):
         MATCHED = "matched", "Matched"

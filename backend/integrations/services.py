@@ -36,7 +36,7 @@ from ledger.services import (
 )
 from wallet.models import Wallet, WithdrawalRequest
 from wallet.models import Deposit, IncomingBankTransfer
-from wallet.services import build_fleet_deposit_reference, build_wallet_deposit_reference, complete_bank_deposit, complete_fleet_bank_deposit
+from wallet.services import build_fleet_deposit_reference, complete_fleet_bank_deposit
 
 from .models import (
     BogPayout,
@@ -439,6 +439,12 @@ def _bog_request(*, connection: ProviderConnection, method: str, endpoint: str, 
             return {
                 "ok": 200 <= getattr(response, "status", 200) < 300,
                 "http_status": getattr(response, "status", 200),
+                "correlation_id": (
+                    getattr(getattr(response, "headers", None), "get", lambda *_args, **_kwargs: None)(
+                        "x-correlationid"
+                    )
+                    or ""
+                ),
                 "body": _parse_bog_response(response),
             }
     except HTTPError as exc:
@@ -455,12 +461,14 @@ def _bog_request(*, connection: ProviderConnection, method: str, endpoint: str, 
         return {
             "ok": False,
             "http_status": exc.code,
+            "correlation_id": (getattr(exc, "headers", None) or {}).get("x-correlationid", ""),
             "body": parsed_body,
         }
     except URLError as exc:
         return {
             "ok": False,
             "http_status": None,
+            "correlation_id": "",
             "body": {"error": str(exc.reason)},
         }
 
@@ -733,7 +741,16 @@ def _extract_card_payment_detail(body: dict):
     return detail if isinstance(detail, dict) else {}
 
 
-def create_bog_card_order(*, connection: ProviderConnection, user, amount: Decimal, currency: str = "GEL", save_card: bool = False, parent_order_id: str = ""):
+def create_bog_card_order(
+    *,
+    connection: ProviderConnection,
+    user,
+    fleet: Fleet | None,
+    amount: Decimal,
+    currency: str = "GEL",
+    save_card: bool = False,
+    parent_order_id: str = "",
+):
     missing = _bog_payments_missing_env_vars()
     if missing:
         raise ValueError(f"Missing BoG Payments settings: {', '.join(sorted(set(missing)))}")
@@ -794,6 +811,7 @@ def create_bog_card_order(*, connection: ProviderConnection, user, amount: Decim
         defaults={
             "connection": connection,
             "user": user,
+            "fleet": fleet,
             "external_order_id": external_order_id,
             "parent_order_id": parent_order_id,
             "amount": amount,
@@ -852,7 +870,10 @@ def sync_bog_card_order(*, order: BogCardOrder):
         locked_order.transfer_method = str(transfer_method_key or locked_order.transfer_method or "")
         locked_order.card_type = str(payment_detail.get("card_type") or locked_order.card_type or "")
         if mapped_status == BogCardOrder.Status.COMPLETED and locked_order.completed_at is None:
-            complete_bank_deposit(
+            if locked_order.fleet is None:
+                raise ValueError("BoG card order is missing fleet context.")
+            complete_fleet_bank_deposit(
+                fleet=locked_order.fleet,
                 user=locked_order.user,
                 provider="bog_card",
                 provider_transaction_id=locked_order.provider_order_id,
@@ -1837,7 +1858,16 @@ def submit_withdrawal_to_bog(*, connection: ProviderConnection, withdrawal: With
             "result_code": result_code,
             "match_score": match_score,
             "request_payload": request_payload[0],
-            "response_payload": first_item or body or {},
+            "response_payload": {
+                "submission": _build_bog_debug_event(
+                    response=response,
+                    endpoint="/documents/domestic",
+                    request_body=request_payload[0],
+                ),
+                "latest_status": {},
+                "otp_requests": [],
+                "sign_attempts": [],
+            },
         },
     )
 
@@ -1846,7 +1876,13 @@ def submit_withdrawal_to_bog(*, connection: ProviderConnection, withdrawal: With
         payout.provider_unique_id = payout.provider_unique_id or unique_id
         payout.provider_unique_key = payout.provider_unique_key or unique_key
         payout.request_payload = request_payload[0]
-        payout.response_payload = first_item or body or {}
+        response_payload = _normalize_bog_payout_response_payload(payout.response_payload)
+        response_payload["submission"] = _build_bog_debug_event(
+            response=response,
+            endpoint="/documents/domestic",
+            request_body=request_payload[0],
+        )
+        payout.response_payload = response_payload
         payout.result_code = result_code
         payout.match_score = match_score
 
@@ -1900,11 +1936,127 @@ def submit_withdrawal_to_bog(*, connection: ProviderConnection, withdrawal: With
 
 def _map_bog_status(provider_status: str):
     normalized = (provider_status or "").strip().lower()
+    letter_code = normalized.upper() if len(normalized) == 1 else ""
+    if letter_code == "P":
+        return BogPayout.Status.SETTLED
+    if letter_code in {"C", "D", "R"}:
+        return BogPayout.Status.FAILED
+    if letter_code in {"A", "N", "S", "T", "Z"}:
+        return BogPayout.Status.PROCESSING
     if any(word in normalized for word in ("reject", "fail", "cancel", "error")):
         return BogPayout.Status.FAILED
     if any(word in normalized for word in ("complete", "execut", "success", "done", "finish")):
         return BogPayout.Status.SETTLED
     return BogPayout.Status.PROCESSING
+
+
+def _normalize_bog_payout_response_payload(payload):
+    if isinstance(payload, dict) and any(
+        key in payload for key in ("submission", "latest_status", "otp_requests", "sign_attempts")
+    ):
+        return {
+            "submission": payload.get("submission") or {},
+            "latest_status": payload.get("latest_status") or {},
+            "otp_requests": list(payload.get("otp_requests") or []),
+            "sign_attempts": list(payload.get("sign_attempts") or []),
+        }
+    latest_status = payload if isinstance(payload, dict) else {}
+    return {
+        "submission": {},
+        "latest_status": latest_status,
+        "otp_requests": [],
+        "sign_attempts": [],
+    }
+
+
+def _build_bog_debug_event(*, response: dict, endpoint: str, request_body=None):
+    return {
+        "endpoint": endpoint,
+        "ok": bool(response.get("ok")),
+        "http_status": response.get("http_status"),
+        "correlation_id": response.get("correlation_id") or "",
+        "request_body": request_body if request_body is not None else {},
+        "response_body": response.get("body") if isinstance(response.get("body"), (dict, list)) else {},
+        "recorded_at": timezone.now().isoformat(),
+    }
+
+
+def _append_bog_payout_debug_event(*, payout: BogPayout, key: str, event: dict):
+    payload = _normalize_bog_payout_response_payload(payout.response_payload)
+    existing = payload.get(key)
+    if isinstance(existing, list):
+        existing.append(event)
+        payload[key] = existing[-10:]
+    else:
+        payload[key] = event
+    payout.response_payload = payload
+
+
+def request_bog_payout_otp(*, payout: BogPayout):
+    if not payout.provider_unique_key:
+        raise ValueError("BoG payout does not have a provider document key yet.")
+
+    response = _bog_request(
+        connection=payout.connection,
+        method="POST",
+        endpoint="/otp/request",
+        body={"ObjectKey": payout.provider_unique_key, "ObjectType": 0},
+    )
+    locked_payout = BogPayout.objects.get(id=payout.id)
+    _append_bog_payout_debug_event(
+        payout=locked_payout,
+        key="otp_requests",
+        event=_build_bog_debug_event(
+            response=response,
+            endpoint="/otp/request",
+            request_body={"ObjectKey": payout.provider_unique_key, "ObjectType": 0},
+        ),
+    )
+    locked_payout.save(update_fields=["response_payload", "updated_at"])
+    if not response.get("ok"):
+        detail = (
+            response.get("body", {}).get("Message")
+            if isinstance(response.get("body"), dict)
+            else ""
+        ) or f"BoG OTP request failed (HTTP {response.get('http_status') or 'n/a'})."
+        raise ValueError(detail)
+    return {
+        "ok": True,
+        "detail": "OTP requested from Bank of Georgia.",
+        "http_status": response.get("http_status"),
+        "body": response.get("body") or {},
+    }
+
+
+def sign_bog_payout_document(*, payout: BogPayout, otp: str):
+    if not payout.provider_unique_key:
+        raise ValueError("BoG payout does not have a provider document key yet.")
+
+    response = _bog_request(
+        connection=payout.connection,
+        method="POST",
+        endpoint="/sign/document",
+        body={"Otp": otp, "ObjectKey": payout.provider_unique_key},
+    )
+    locked_payout = BogPayout.objects.get(id=payout.id)
+    _append_bog_payout_debug_event(
+        payout=locked_payout,
+        key="sign_attempts",
+        event=_build_bog_debug_event(
+            response=response,
+            endpoint="/sign/document",
+            request_body={"Otp": otp, "ObjectKey": payout.provider_unique_key},
+        ),
+    )
+    locked_payout.save(update_fields=["response_payload", "updated_at"])
+    if not response.get("ok"):
+        detail = (
+            response.get("body", {}).get("Message")
+            if isinstance(response.get("body"), dict)
+            else ""
+        ) or f"BoG sign request failed (HTTP {response.get('http_status') or 'n/a'})."
+        raise ValueError(detail)
+    return sync_bog_payout_status(payout=payout)
 
 
 def sync_bog_payout_status(*, payout: BogPayout):
@@ -1927,7 +2079,13 @@ def sync_bog_payout_status(*, payout: BogPayout):
         locked_payout.provider_status = provider_status
         locked_payout.result_code = body.get("ResultCode")
         locked_payout.match_score = body.get("Match")
-        locked_payout.response_payload = body
+        response_payload = _normalize_bog_payout_response_payload(locked_payout.response_payload)
+        response_payload["latest_status"] = _build_bog_debug_event(
+            response=response,
+            endpoint=f"/documents/status/{payout.provider_unique_key}",
+            request_body={},
+        )
+        locked_payout.response_payload = response_payload
         locked_payout.last_status_checked_at = timezone.now()
 
         if response.get("ok"):
@@ -2242,7 +2400,7 @@ def build_reconciliation_report(*, user, fleet: Fleet):
             | Q(reference_type="withdrawal", reference_id__in=[str(item) for item in withdrawal_ids])
         )
     )
-    treasury_expected_total = total_fleet_reserves + payout_clearing_balance + platform_fee_balance
+    treasury_expected_total = total_fleet_reserves + payout_clearing_balance
     treasury_delta = treasury_balance - treasury_expected_total
 
     return {

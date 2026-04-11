@@ -1,11 +1,14 @@
 from django.urls import path
 
 from .views import (
+    AdminNetworkSummaryView,
     BalanceView,
     BankAccountListCreateView,
     DepositInstructionsView,
     DepositListView,
+    OwnerDriverFinanceListView,
     OwnerFleetSummaryView,
+    OwnerTransactionListView,
     DepositSyncView,
     IncomingTransferManualMatchView,
     TransactionListView,
@@ -20,7 +23,10 @@ from .views import (
 urlpatterns = [
     path("balance/", BalanceView.as_view(), name="wallet-balance"),
     path("bank-accounts/", BankAccountListCreateView.as_view(), name="bank-account-list-create"),
+    path("admin-network-summary/", AdminNetworkSummaryView.as_view(), name="admin-network-summary"),
     path("owner-summary/", OwnerFleetSummaryView.as_view(), name="owner-fleet-summary"),
+    path("owner-driver-finance/", OwnerDriverFinanceListView.as_view(), name="owner-driver-finance"),
+    path("owner-transactions/", OwnerTransactionListView.as_view(), name="owner-transactions"),
     path("deposit-instructions/", DepositInstructionsView.as_view(), name="deposit-instructions"),
     path("deposits/", DepositListView.as_view(), name="deposit-list"),
     path("deposits/sync/", DepositSyncView.as_view(), name="deposit-sync"),
