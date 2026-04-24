@@ -7,7 +7,9 @@ from .views import (
     FleetListView,
     FleetMemberRoleUpdateView,
     FleetMembersView,
+    FleetRegistrationView,
     MeView,
+    PublicDriverRegistrationView,
     RegisterView,
     RequestFleetCodeView,
     VerifyFleetCodeView,
@@ -16,6 +18,8 @@ from .views import (
 
 urlpatterns = [
     path("register/", RegisterView.as_view(), name="register"),
+    path("fleets/register/", FleetRegistrationView.as_view(), name="fleet-register"),
+    path("drivers/register/", PublicDriverRegistrationView.as_view(), name="driver-register"),
     path("login/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
     path("refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("me/", MeView.as_view(), name="me"),

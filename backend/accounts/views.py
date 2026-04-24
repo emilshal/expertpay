@@ -3,6 +3,7 @@ from datetime import timedelta
 from django.contrib.auth.models import User
 from django.db import IntegrityError
 from django.db import transaction
+from django.conf import settings
 from django.utils import timezone
 from rest_framework import generics
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -12,12 +13,16 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from .roles import get_request_fleet_binding, is_platform_admin
 from .models import DriverFleetMembership, Fleet, FleetPhoneBinding, LoginCodeChallenge
+from .services import OtpDeliveryError, is_internal_admin_phone, send_login_code, verify_login_code
 from .serializers import (
     DriverYandexMappingSerializer,
     DriverYandexMappingUpdateSerializer,
+    FleetMemberCreateSerializer,
+    FleetRegistrationSerializer,
     FleetMemberRoleUpdateSerializer,
     FleetPhoneBindingSerializer,
     FleetSerializer,
+    PublicDriverRegistrationSerializer,
     RegisterSerializer,
     RequestCodeSerializer,
     UserSerializer,
@@ -29,6 +34,26 @@ class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
     serializer_class = RegisterSerializer
     permission_classes = [AllowAny]
+
+
+class FleetRegistrationView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = FleetRegistrationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        fleet = serializer.save()
+        return Response(FleetSerializer(fleet).data, status=201)
+
+
+class PublicDriverRegistrationView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = PublicDriverRegistrationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        binding = serializer.save()
+        return Response(FleetPhoneBindingSerializer(binding).data, status=201)
 
 
 class MeView(APIView):
@@ -63,28 +88,45 @@ class RequestFleetCodeView(APIView):
 
         fleet_name = serializer.validated_data["fleet_name"].strip()
         phone_number = serializer.validated_data["phone_number"].strip()
+        requested_role = serializer.validated_data.get("role") or ""
+        internal_admin_requested = request.headers.get("X-Internal-Admin-Login", "").strip() == "1"
+        if requested_role == FleetPhoneBinding.Role.ADMIN and not (
+            internal_admin_requested and is_internal_admin_phone(phone_number)
+        ):
+            return Response({"detail": "Admin login is not available."}, status=403)
 
         fleet = Fleet.objects.filter(name__iexact=fleet_name).first()
         if fleet is None:
             return Response({"detail": "Fleet not found."}, status=404)
 
-        binding = FleetPhoneBinding.objects.filter(
+        bindings = FleetPhoneBinding.objects.filter(
             fleet=fleet, phone_number=phone_number, is_active=True, user__is_active=True
-        ).first()
+        )
+        if requested_role:
+            bindings = bindings.filter(role=requested_role)
+        binding = bindings.first()
         if binding is None:
             return Response({"detail": "Wrong number for this fleet."}, status=400)
+
+        try:
+            otp_payload = send_login_code(phone_number=phone_number)
+        except OtpDeliveryError as exc:
+            return Response({"detail": exc.detail}, status=exc.status_code)
 
         with transaction.atomic():
             challenge = LoginCodeChallenge.objects.create(
                 fleet=fleet,
                 user=binding.user,
                 phone_number=phone_number,
-                code="123456",
-                expires_at=timezone.now() + timedelta(minutes=5),
+                code=otp_payload["code"],
+                provider=otp_payload["provider"],
+                provider_hash=otp_payload["provider_hash"],
+                requested_role=requested_role,
+                expires_at=timezone.now() + timedelta(seconds=settings.OTP_CODE_TTL_SECONDS),
             )
 
-        response_data = {"challenge_id": challenge.id, "expires_in_seconds": 300}
-        if request.query_params.get("debug") == "1":
+        response_data = {"challenge_id": challenge.id, "expires_in_seconds": settings.OTP_CODE_TTL_SECONDS}
+        if request.query_params.get("debug") == "1" and challenge.code:
             response_data["code"] = challenge.code
         return Response(response_data, status=201)
 
@@ -104,11 +146,29 @@ class VerifyFleetCodeView(APIView):
             challenge = LoginCodeChallenge.objects.select_for_update().filter(id=challenge_id).first()
             if challenge is None or not challenge.is_valid():
                 return Response({"detail": "Code expired or invalid."}, status=400)
-            if challenge.code != code:
+            if not verify_login_code(
+                provider=challenge.provider,
+                phone_number=challenge.phone_number,
+                provider_hash=challenge.provider_hash,
+                stored_code=challenge.code,
+                submitted_code=code,
+                ip_address=request.META.get("HTTP_X_FORWARDED_FOR", "").split(",")[0].strip()
+                or request.META.get("REMOTE_ADDR", "").strip(),
+            ):
                 return Response({"detail": "Invalid code."}, status=400)
 
             challenge.is_consumed = True
             challenge.save(update_fields=["is_consumed"])
+
+        selected_bindings = FleetPhoneBinding.objects.filter(
+            fleet=challenge.fleet,
+            user=challenge.user,
+            phone_number=challenge.phone_number,
+            is_active=True,
+        )
+        if challenge.requested_role:
+            selected_bindings = selected_bindings.filter(role=challenge.requested_role)
+        selected_binding = selected_bindings.first()
 
         refresh = RefreshToken.for_user(challenge.user)
         return Response(
@@ -117,12 +177,7 @@ class VerifyFleetCodeView(APIView):
                 "refresh": str(refresh),
                 "user": UserSerializer(challenge.user).data,
                 "fleet": {"id": challenge.fleet.id, "name": challenge.fleet.name},
-                "role": FleetPhoneBinding.objects.filter(
-                    fleet=challenge.fleet, user=challenge.user, phone_number=challenge.phone_number
-                )
-                .values_list("role", flat=True)
-                .first()
-                or FleetPhoneBinding.Role.DRIVER,
+                "role": selected_binding.role if selected_binding else FleetPhoneBinding.Role.DRIVER,
             }
         )
 
@@ -194,6 +249,74 @@ class FleetMembersView(APIView):
 
         members = FleetPhoneBinding.objects.filter(fleet=fleet).select_related("user").order_by("created_at")
         return Response(FleetPhoneBindingSerializer(members, many=True).data, status=200)
+
+    def post(self, request):
+        serializer = FleetMemberCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        fleet_name = serializer.validated_data["fleet_name"].strip()
+        phone_number = serializer.validated_data["phone_number"].strip()
+        target_role = serializer.validated_data.get("role") or FleetPhoneBinding.Role.DRIVER
+
+        fleet = Fleet.objects.filter(name__iexact=fleet_name).first()
+        if fleet is None:
+            return Response({"detail": "Fleet not found."}, status=404)
+
+        actor_binding = _get_active_binding(user=request.user, fleet=fleet)
+        if actor_binding is None:
+            return Response({"detail": "You are not linked to this fleet."}, status=403)
+        if not _can_manage_fleet_members(actor_binding.role):
+            return Response({"detail": "Only fleet admin/owner can add members."}, status=403)
+        if actor_binding.role == FleetPhoneBinding.Role.ADMIN and target_role == FleetPhoneBinding.Role.OWNER:
+            return Response({"detail": "Admin cannot assign owner role."}, status=403)
+
+        existing_binding = FleetPhoneBinding.objects.filter(
+            fleet=fleet,
+            phone_number=phone_number,
+            role=target_role,
+            is_active=True,
+        ).first()
+        if existing_binding is not None:
+            return Response({"detail": "This phone number is already registered."}, status=400)
+
+        username = f"fleet_member_{phone_number}"
+        user, _ = User.objects.get_or_create(
+            username=username,
+            defaults={
+                "first_name": serializer.validated_data.get("first_name", "").strip(),
+                "last_name": serializer.validated_data.get("last_name", "").strip(),
+                "email": serializer.validated_data.get("email", "").strip(),
+                "is_active": True,
+            },
+        )
+        update_fields = []
+        for field in ("first_name", "last_name", "email"):
+            value = serializer.validated_data.get(field, "").strip()
+            if value and getattr(user, field) != value:
+                setattr(user, field, value)
+                update_fields.append(field)
+        if not user.is_active:
+            user.is_active = True
+            update_fields.append("is_active")
+        if update_fields:
+            user.save(update_fields=update_fields)
+
+        binding = FleetPhoneBinding.objects.create(
+            fleet=fleet,
+            user=user,
+            phone_number=phone_number,
+            role=target_role,
+            is_active=True,
+        )
+        if target_role == FleetPhoneBinding.Role.DRIVER:
+            DriverFleetMembership.objects.get_or_create(
+                user=user,
+                defaults={
+                    "fleet": fleet,
+                    "is_active": True,
+                },
+            )
+        return Response(FleetPhoneBindingSerializer(binding).data, status=201)
 
 
 class FleetMemberRoleUpdateView(APIView):

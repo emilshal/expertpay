@@ -71,10 +71,14 @@ def _yandex_missing_env_vars():
 
 def _bog_missing_env_vars():
     missing = []
-    if not settings.BOG_TOKEN_URL:
-        missing.append("BOG_TOKEN_URL")
     if not settings.BOG_BASE_URL:
         missing.append("BOG_BASE_URL")
+    if settings.BOG_AUTH_FLOW in {"implicit", "access_token"}:
+        if not settings.BOG_IMPLICIT_ACCESS_TOKEN:
+            missing.append("BOG_IMPLICIT_ACCESS_TOKEN")
+        return missing
+    if not settings.BOG_TOKEN_URL:
+        missing.append("BOG_TOKEN_URL")
     if not settings.BOG_CLIENT_ID:
         missing.append("BOG_CLIENT_ID")
     if not settings.BOG_CLIENT_SECRET:
@@ -111,6 +115,24 @@ def test_live_bog_token_connection():
             "http_status": None,
             "endpoint": settings.BOG_TOKEN_URL or "",
             "detail": f"Missing BoG settings: {', '.join(missing)}",
+        }
+
+    if settings.BOG_AUTH_FLOW in {"implicit", "access_token"}:
+        access_token = settings.BOG_IMPLICIT_ACCESS_TOKEN
+        return {
+            "ok": bool(access_token),
+            "configured": True,
+            "provider": "bog",
+            "http_status": None,
+            "endpoint": "env:BOG_IMPLICIT_ACCESS_TOKEN",
+            "detail": "Using BoG implicit-flow access token from environment.",
+            "response": {
+                "token_type": settings.BOG_IMPLICIT_TOKEN_TYPE,
+                "expires_in": None,
+                "scope": settings.BOG_SCOPE or "corp",
+                "access_token_received": bool(access_token),
+                "access_token": access_token,
+            },
         }
 
     credentials = f"{settings.BOG_CLIENT_ID}:{settings.BOG_CLIENT_SECRET}".encode("utf-8")
@@ -291,6 +313,11 @@ def _request_new_bog_access_token():
 
 
 def get_valid_bog_access_token(*, connection: ProviderConnection, force_refresh: bool = False):
+    if settings.BOG_AUTH_FLOW in {"implicit", "access_token"}:
+        if not settings.BOG_IMPLICIT_ACCESS_TOKEN:
+            raise ValueError("Missing BoG settings: BOG_IMPLICIT_ACCESS_TOKEN")
+        return settings.BOG_IMPLICIT_ACCESS_TOKEN
+
     cache_key = _bog_cache_key(connection)
     if not force_refresh:
         token_payload = cache.get(cache_key)
@@ -361,8 +388,10 @@ def _bog_payments_request(
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "Accept": "application/json",
-        "Accept-Language": "en",
+        "Accept-Language": settings.BOG_PAYMENTS_ACCEPT_LANGUAGE,
     }
+    if settings.BOG_PAYMENTS_THEME:
+        headers["Theme"] = settings.BOG_PAYMENTS_THEME
     if extra_headers:
         headers.update(extra_headers)
 
@@ -750,14 +779,21 @@ def create_bog_card_order(
     currency: str = "GEL",
     save_card: bool = False,
     parent_order_id: str = "",
+    callback_url: str = "",
+    success_url: str = "",
+    fail_url: str = "",
 ):
     missing = _bog_payments_missing_env_vars()
     if missing:
         raise ValueError(f"Missing BoG Payments settings: {', '.join(sorted(set(missing)))}")
 
     external_order_id = f"cardtopup-{user.id}-{uuid.uuid4().hex[:12]}"
+    effective_callback_url = callback_url or settings.BOG_PAYMENTS_CALLBACK_URL
+    effective_success_url = success_url or settings.BOG_PAYMENTS_SUCCESS_URL
+    effective_fail_url = fail_url or settings.BOG_PAYMENTS_FAIL_URL
+
     request_payload = {
-        "callback_url": settings.BOG_PAYMENTS_CALLBACK_URL,
+        "callback_url": effective_callback_url,
         "external_order_id": external_order_id,
         "capture": "automatic",
         "purchase_units": {
@@ -768,17 +804,20 @@ def create_bog_card_order(
                     "quantity": 1,
                     "unit_price": float(amount),
                     "product_id": f"expertpay_topup_{user.id}",
+                    "description": f"ExpertPay fleet reserve top-up for {fleet.name if fleet is not None else 'fleet'}",
+                    "total_price": float(amount),
                 }
             ],
         },
-        "payment_method": ["card"],
         "ttl": settings.BOG_PAYMENTS_DEFAULT_TTL_MINUTES,
     }
+    if settings.BOG_PAYMENTS_METHODS:
+        request_payload["payment_method"] = settings.BOG_PAYMENTS_METHODS
     redirect_urls = {}
-    if settings.BOG_PAYMENTS_SUCCESS_URL:
-        redirect_urls["success"] = settings.BOG_PAYMENTS_SUCCESS_URL
-    if settings.BOG_PAYMENTS_FAIL_URL:
-        redirect_urls["fail"] = settings.BOG_PAYMENTS_FAIL_URL
+    if effective_success_url:
+        redirect_urls["success"] = effective_success_url
+    if effective_fail_url:
+        redirect_urls["fail"] = effective_fail_url
     if redirect_urls:
         request_payload["redirect_urls"] = redirect_urls
     if parent_order_id:
@@ -820,9 +859,9 @@ def create_bog_card_order(
             "provider_order_status": "created",
             "redirect_url": str(redirect_link.get("href") or ""),
             "details_url": str(details_link.get("href") or ""),
-            "callback_url": settings.BOG_PAYMENTS_CALLBACK_URL,
-            "success_url": settings.BOG_PAYMENTS_SUCCESS_URL,
-            "fail_url": settings.BOG_PAYMENTS_FAIL_URL,
+            "callback_url": effective_callback_url,
+            "success_url": effective_success_url,
+            "fail_url": effective_fail_url,
             "save_card": save_card,
             "raw_request": request_payload,
             "raw_response": body,

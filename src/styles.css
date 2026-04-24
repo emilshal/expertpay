@@ -523,6 +523,136 @@ body::after {
   padding: 12px 0 24px;
 }
 
+.publicPage {
+  min-height: 100vh;
+  position: relative;
+  z-index: 1;
+}
+
+.publicHeader {
+  display: grid;
+  gap: 14px;
+  padding-top: calc(16px + env(safe-area-inset-top));
+  padding-right: calc(20px + env(safe-area-inset-right));
+  padding-bottom: 14px;
+  padding-left: calc(20px + env(safe-area-inset-left));
+}
+
+.publicHeaderTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.publicTabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+
+.publicTabs::-webkit-scrollbar {
+  display: none;
+}
+
+.publicTab {
+  white-space: nowrap;
+  text-decoration: none;
+  padding: 10px 14px;
+  border-radius: 999px;
+  color: var(--text-1);
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(180, 205, 255, 0.08);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.publicTabActive {
+  color: var(--text-0);
+  background: linear-gradient(180deg, rgba(122, 134, 255, 0.32), rgba(79, 97, 255, 0.28));
+  box-shadow: inset 0 0 0 1px rgba(146, 164, 255, 0.3);
+}
+
+.publicMain {
+  padding-right: calc(20px + env(safe-area-inset-right));
+  padding-bottom: calc(28px + env(safe-area-inset-bottom));
+  padding-left: calc(20px + env(safe-area-inset-left));
+}
+
+.publicContent {
+  width: min(100%, 980px);
+  margin: 0 auto;
+  display: grid;
+  gap: 16px;
+}
+
+.publicHeroCard,
+.publicSectionCard {
+  display: grid;
+  gap: 14px;
+}
+
+.publicHeroTitle {
+  margin: 0;
+  font-size: 34px;
+  line-height: 1.05;
+  letter-spacing: -0.05em;
+  color: var(--text-0);
+}
+
+.publicBodyText {
+  margin: 0;
+  color: var(--text-1);
+  line-height: 1.65;
+}
+
+.publicSectionTitle {
+  margin: 0;
+  font-size: 18px;
+  color: var(--text-0);
+}
+
+.publicList {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-1);
+  display: grid;
+  gap: 10px;
+  line-height: 1.6;
+}
+
+.publicFactsGrid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.publicFactCard {
+  display: grid;
+  gap: 8px;
+}
+
+.publicFactLabel {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-2);
+}
+
+.publicFactValue {
+  color: var(--text-0);
+  line-height: 1.5;
+  font-weight: 700;
+}
+
+.publicPage .loginPage {
+  min-height: auto;
+  padding-top: 4px;
+}
+
 .loginCard {
   width: min(100%, 560px);
 }
@@ -531,6 +661,57 @@ body::after {
   display: flex;
   justify-content: flex-end;
   margin-bottom: 10px;
+}
+
+.loginModeSwitch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 5px;
+  margin: 0 0 18px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(180, 205, 255, 0.08);
+}
+
+.loginRoleSwitch {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding: 5px;
+  margin: 0 0 8px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(180, 205, 255, 0.08);
+}
+
+.loginModeButton {
+  border: 0;
+  border-radius: 14px;
+  padding: 11px 12px;
+  color: var(--text-1);
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.loginRoleButton {
+  font-size: 13px;
+  padding-right: 8px;
+  padding-left: 8px;
+}
+
+.loginModeButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.loginModeButtonActive {
+  color: var(--text-0);
+  background: rgba(61, 152, 255, 0.28);
+  box-shadow: inset 0 0 0 1px rgba(123, 205, 255, 0.38);
 }
 
 .loginTitle {
@@ -594,6 +775,137 @@ body::after {
 
 .phoneInput {
   min-width: 0;
+}
+
+.installGuideButton {
+  border: 0;
+  border-radius: 999px;
+  padding: 10px 14px;
+  color: rgba(226, 244, 255, 0.96);
+  background: rgba(32, 128, 232, 0.24);
+  box-shadow: inset 0 0 0 1px rgba(123, 205, 255, 0.32);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.installGuideButton:hover {
+  background: rgba(40, 145, 255, 0.32);
+}
+
+.installGuideIconButton {
+  display: inline-grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 0;
+  border-radius: 15px;
+  color: rgba(226, 244, 255, 0.96);
+  background: linear-gradient(180deg, rgba(35, 137, 238, 0.34), rgba(21, 91, 183, 0.24));
+  box-shadow: inset 0 0 0 1px rgba(123, 205, 255, 0.34), 0 12px 28px rgba(5, 18, 39, 0.28);
+  cursor: pointer;
+}
+
+.installGuideIconButton:hover {
+  background: linear-gradient(180deg, rgba(49, 158, 255, 0.44), rgba(28, 105, 205, 0.32));
+}
+
+.installGuideOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(4, 12, 24, 0.72);
+  backdrop-filter: blur(14px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.installGuidePanel {
+  width: min(100%, 430px);
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  display: grid;
+  gap: 16px;
+  border-radius: 22px;
+  padding: 20px;
+  color: var(--text-0);
+  background: linear-gradient(180deg, rgba(18, 39, 66, 0.98), rgba(9, 22, 39, 0.98));
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.44), inset 0 0 0 1px rgba(164, 216, 255, 0.14);
+}
+
+.installGuideHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.installGuideEyebrow {
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.installGuideTitle {
+  margin: 3px 0 0;
+  font-size: 24px;
+  line-height: 1.15;
+}
+
+.installGuideClose {
+  border: 0;
+  border-radius: 999px;
+  width: 36px;
+  height: 36px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  color: var(--text-0);
+  background: rgba(255, 255, 255, 0.09);
+  font: inherit;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.installGuideTabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 5px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.installGuideTab {
+  border: 0;
+  border-radius: 12px;
+  padding: 10px 12px;
+  color: var(--text-1);
+  background: transparent;
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.installGuideTabActive {
+  color: var(--text-0);
+  background: rgba(61, 152, 255, 0.28);
+  box-shadow: inset 0 0 0 1px rgba(123, 205, 255, 0.36);
+}
+
+.installGuideSteps {
+  margin: 0;
+  padding-left: 22px;
+  display: grid;
+  gap: 12px;
+  color: var(--text-1);
+  line-height: 1.5;
 }
 
 .btn {
@@ -910,6 +1222,13 @@ body::after {
   line-height: 1.08;
   letter-spacing: -0.04em;
   color: var(--text-0);
+}
+
+.ownerRosterTitleRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
 }
 
 .ownerRosterBanner {
@@ -1560,6 +1879,12 @@ body::after {
   padding: 18px 22px;
   background: linear-gradient(180deg, rgba(15, 20, 33, 0.92), rgba(9, 13, 23, 0.96));
   box-shadow: 0 12px 34px rgba(0, 0, 0, 0.34), inset 0 0 0 1px rgba(144, 171, 220, 0.12);
+}
+
+.driverInstallAction {
+  display: flex;
+  justify-content: flex-end;
+  margin: -4px 2px -8px;
 }
 
 .driverProgressName {

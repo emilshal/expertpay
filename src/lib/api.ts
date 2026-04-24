@@ -131,6 +131,8 @@ async function request<T>(
     if (token) headers.set("Authorization", `Bearer ${token}`);
     const fleetName = getActiveFleetName();
     if (fleetName) headers.set("X-Fleet-Name", fleetName);
+    const activeRole = getActiveRole();
+    if (activeRole) headers.set("X-Active-Role", activeRole);
   }
 
   let response = await fetch(buildUrl(path), { ...rest, headers });
@@ -698,12 +700,58 @@ export async function fleets() {
   return request<Fleet[]>("/api/auth/fleets/", { auth: false });
 }
 
-export async function requestFleetCode(input: { fleet_name: string; phone_number: string }) {
+export async function registerFleet(input: {
+  fleet_name: string;
+  phone_number: string;
+  first_name?: string;
+  last_name?: string;
+  email?: string;
+}) {
+  return request<Fleet>("/api/auth/fleets/register/", {
+    method: "POST",
+    auth: false,
+    body: JSON.stringify({
+      fleet_name: input.fleet_name,
+      phone_number: input.phone_number,
+      first_name: input.first_name ?? "",
+      last_name: input.last_name ?? "",
+      email: input.email ?? ""
+    })
+  });
+}
+
+export async function registerDriver(input: {
+  fleet_name: string;
+  phone_number: string;
+  first_name?: string;
+  last_name?: string;
+  email?: string;
+}) {
+  return request<FleetMember>("/api/auth/drivers/register/", {
+    method: "POST",
+    auth: false,
+    body: JSON.stringify({
+      fleet_name: input.fleet_name,
+      phone_number: input.phone_number,
+      first_name: input.first_name ?? "",
+      last_name: input.last_name ?? "",
+      email: input.email ?? ""
+    })
+  });
+}
+
+export async function requestFleetCode(input: {
+  fleet_name: string;
+  phone_number: string;
+  role?: "driver" | "operator" | "admin" | "owner";
+  internal_admin_login?: boolean;
+}) {
   return request<{ challenge_id: number; expires_in_seconds: number; code?: string }>(
     "/api/auth/request-code/?debug=1",
     {
       method: "POST",
       auth: false,
+      headers: input.internal_admin_login ? { "X-Internal-Admin-Login": "1" } : undefined,
       body: JSON.stringify(input)
     }
   );
@@ -729,6 +777,28 @@ export async function verifyFleetCode(input: { challenge_id: number; code: strin
 
 export async function fleetMembers(fleetName: string) {
   return request<FleetMember[]>(`/api/auth/fleet-members/?fleet_name=${encodeURIComponent(fleetName)}`);
+}
+
+export async function createFleetMember(input: {
+  fleet_name: string;
+  phone_number: string;
+  first_name?: string;
+  last_name?: string;
+  email?: string;
+  role?: "driver" | "operator" | "admin" | "owner";
+}) {
+  return request<FleetMember>("/api/auth/fleet-members/", {
+    method: "POST",
+    body: JSON.stringify({
+      fleet_name: input.fleet_name,
+      phone_number: input.phone_number,
+      first_name: input.first_name ?? "",
+      last_name: input.last_name ?? "",
+      email: input.email ?? "",
+      role: input.role ?? "driver"
+    }),
+    idempotent: true
+  });
 }
 
 export async function updateFleetMemberRole(input: {

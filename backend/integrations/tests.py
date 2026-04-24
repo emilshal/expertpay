@@ -5,6 +5,7 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.core.management import call_command
+from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework import status
@@ -37,6 +38,7 @@ from .models import (
     YandexTransactionRecord,
 )
 from .services import (
+    create_bog_card_order,
     get_valid_bog_access_token,
     import_unprocessed_events,
     live_sync_yandex_data,
@@ -2034,6 +2036,25 @@ class BogTokenApiTests(APITestCase):
         self.assertEqual(second, "cached-token-value")
         self.assertEqual(mocked_test.call_count, 1)
 
+    @override_settings(BOG_AUTH_FLOW="implicit", BOG_IMPLICIT_ACCESS_TOKEN="implicit-token-value")
+    @patch("integrations.services.test_live_bog_token_connection")
+    def test_bog_implicit_access_token_is_used_from_environment(self, mocked_test):
+        connection = ProviderConnection.objects.create(
+            user=self.user,
+            provider=ProviderConnection.Provider.BANK_OF_GEORGIA,
+            external_account_id="bog-implicit-user",
+            status="active",
+            config={"mode": "live"},
+        )
+        cache.clear()
+
+        first = get_valid_bog_access_token(connection=connection)
+        second = get_valid_bog_access_token(connection=connection, force_refresh=True)
+
+        self.assertEqual(first, "implicit-token-value")
+        self.assertEqual(second, "implicit-token-value")
+        mocked_test.assert_not_called()
+
 
 class IntegrationBackgroundJobCommandTests(APITestCase):
     def setUp(self):
@@ -2322,6 +2343,47 @@ class BogCardPaymentsApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["provider_order_id"], "order-1")
         self.assertEqual(response.data["redirect_url"], "https://pay.example/redirect")
+
+    @override_settings(
+        BOG_PAYMENTS_CALLBACK_URL="https://replace-with-your-public-domain/api/integrations/bog-payments/callback/",
+        BOG_PAYMENTS_SUCCESS_URL="",
+        BOG_PAYMENTS_FAIL_URL="",
+    )
+    @patch("integrations.views.create_bog_card_order")
+    def test_create_card_order_endpoint_uses_public_origin_when_env_has_placeholder(self, mocked_create):
+        order = BogCardOrder.objects.create(
+            connection=self.connection,
+            user=self.user,
+            provider_order_id="order-2",
+            external_order_id="external-2",
+            amount=Decimal("15.00"),
+            currency="GEL",
+            status=BogCardOrder.Status.CREATED,
+            redirect_url="https://pay.example/redirect-2",
+            details_url="https://pay.example/details-2",
+        )
+        mocked_create.return_value = order
+
+        response = self.client.post(
+            reverse("bog-payments-create-order"),
+            data={"amount": "15.00", "currency": "GEL", "save_card": False},
+            format="json",
+            HTTP_ORIGIN="https://ghz-hundreds-efforts-urban.trycloudflare.com",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            mocked_create.call_args.kwargs["callback_url"],
+            "https://ghz-hundreds-efforts-urban.trycloudflare.com/api/integrations/bog-payments/callback/",
+        )
+        self.assertEqual(
+            mocked_create.call_args.kwargs["success_url"],
+            "https://ghz-hundreds-efforts-urban.trycloudflare.com/card-topup",
+        )
+        self.assertEqual(
+            mocked_create.call_args.kwargs["fail_url"],
+            "https://ghz-hundreds-efforts-urban.trycloudflare.com/card-topup",
+        )
 
     @patch("integrations.views.handle_bog_payments_callback")
     def test_callback_endpoint_accepts_unsigned_payload(self, mocked_handle):
@@ -3271,3 +3333,60 @@ class BogCardOrderServiceTests(APITestCase):
         )
         self.assertEqual(get_account_balance(reserve_account), Decimal("32.40"))
         self.assertEqual(get_account_balance(treasury_account), Decimal("32.40"))
+
+    @patch("integrations.services._bog_payments_request")
+    def test_create_bog_card_order_uses_hosted_checkout_defaults_without_forced_methods(self, mocked_request):
+        mocked_request.return_value = {
+            "ok": True,
+            "http_status": 200,
+            "body": {
+                "id": "card-order-2002",
+                "_links": {
+                    "details": {"href": "https://api.bog.ge/payments/v1/receipt/card-order-2002"},
+                    "redirect": {"href": "https://payment.bog.ge/?order_id=card-order-2002"},
+                },
+            },
+        }
+
+        order = create_bog_card_order(
+            connection=self.connection,
+            user=self.user,
+            fleet=self.fleet,
+            amount=Decimal("25.00"),
+            currency="GEL",
+        )
+
+        self.assertEqual(order.provider_order_id, "card-order-2002")
+        payload = mocked_request.call_args.kwargs["body"]
+        self.assertEqual(
+            payload["purchase_units"]["basket"][0]["description"],
+            f"ExpertPay fleet reserve top-up for {self.fleet.name}",
+        )
+        self.assertEqual(payload["purchase_units"]["basket"][0]["total_price"], 25.0)
+        self.assertNotIn("payment_method", payload)
+
+    @override_settings(BOG_PAYMENTS_METHODS=["card", "bog_p2p"])
+    @patch("integrations.services._bog_payments_request")
+    def test_create_bog_card_order_respects_configured_payment_methods(self, mocked_request):
+        mocked_request.return_value = {
+            "ok": True,
+            "http_status": 200,
+            "body": {
+                "id": "card-order-2003",
+                "_links": {
+                    "details": {"href": "https://api.bog.ge/payments/v1/receipt/card-order-2003"},
+                    "redirect": {"href": "https://payment.bog.ge/?order_id=card-order-2003"},
+                },
+            },
+        }
+
+        create_bog_card_order(
+            connection=self.connection,
+            user=self.user,
+            fleet=self.fleet,
+            amount=Decimal("11.50"),
+            currency="GEL",
+        )
+
+        payload = mocked_request.call_args.kwargs["body"]
+        self.assertEqual(payload["payment_method"], ["card", "bog_p2p"])

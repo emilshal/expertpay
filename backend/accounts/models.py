@@ -30,7 +30,7 @@ class FleetPhoneBinding(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        unique_together = ("fleet", "phone_number")
+        unique_together = ("fleet", "phone_number", "role")
         ordering = ["-created_at"]
 
     def __str__(self):
@@ -42,6 +42,9 @@ class LoginCodeChallenge(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="login_challenges")
     phone_number = models.CharField(max_length=32)
     code = models.CharField(max_length=6)
+    provider = models.CharField(max_length=32, default="local")
+    provider_hash = models.CharField(max_length=255, blank=True, default="")
+    requested_role = models.CharField(max_length=20, blank=True, default="")
     expires_at = models.DateTimeField()
     is_consumed = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)

@@ -18,6 +18,7 @@ import {
   type OwnerFleetSummary,
   type OwnerTransactionRow
 } from "../lib/api";
+import InstallAppGuide from "../components/InstallAppGuide";
 import { useI18n } from "../lib/i18n";
 
 function formatApiError(error: unknown) {
@@ -450,13 +451,16 @@ export default function OwnerDashboardPage() {
 
             <div className="ownerRosterIntro">
               <div className="ownerRosterSubtitle">{activeFleetName || pick("Active fleet", "აქტიური ფლიტი")}</div>
-              <h1 className="ownerRosterTitle">
-                {ownerSection === "wallet"
-                  ? pick("Driver balances", "მძღოლების ბალანსები")
-                  : ownerSection === "transactions"
-                    ? pick("Fleet transactions", "ფლიტის ტრანზაქციები")
-                    : pick("Driver roster", "მძღოლების სია")}
-              </h1>
+              <div className="ownerRosterTitleRow">
+                <h1 className="ownerRosterTitle">
+                  {ownerSection === "wallet"
+                    ? pick("Driver balances", "მძღოლების ბალანსები")
+                    : ownerSection === "transactions"
+                      ? pick("Fleet transactions", "ფლიტის ტრანზაქციები")
+                      : pick("Driver roster", "მძღოლების სია")}
+                </h1>
+                <InstallAppGuide />
+              </div>
             </div>
 
             {error ? <p className="statusError">{formatApiError(error)}</p> : null}
@@ -719,7 +723,10 @@ export default function OwnerDashboardPage() {
   return (
     <div className="ownerDashboard">
       <section className="card ownerHero">
-        <div className="ownerHeroEyebrow">{pick("Total funded", "ჯამურად შევსებულია")}</div>
+        <div className="ownerHeroTop">
+          <div className="ownerHeroEyebrow">{pick("Total funded", "ჯამურად შევსებულია")}</div>
+          <InstallAppGuide />
+        </div>
         <div className="ownerHeroBalance">
           {formatMoney(adminSummary?.total_funded ?? "0.00", adminCurrency)}
         </div>

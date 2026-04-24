@@ -9,6 +9,7 @@ import {
   type BankAccount,
   type WithdrawalItem
 } from "../lib/api";
+import InstallAppGuide from "../components/InstallAppGuide";
 import { useI18n } from "../lib/i18n";
 
 type PickFn = (english: string, georgian: string) => string;
@@ -236,6 +237,9 @@ export default function DriverDashboardPage() {
 
   return (
     <div className="dashboard">
+      <div className="driverInstallAction">
+        <InstallAppGuide variant="icon" />
+      </div>
       <section className="card driverProgressCard">
         <div className="driverProgressName">{driverName}</div>
         <div className="driverProgressMeta">

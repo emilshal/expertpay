@@ -69,8 +69,9 @@ export default function App() {
   if (!isAuthed) {
     return (
       <Routes>
+        <Route path="/" element={<LoginPage onAuthenticated={refreshSession} />} />
         <Route path="/login" element={<LoginPage onAuthenticated={refreshSession} />} />
-        <Route path="*" element={<Navigate to="/login" replace />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     );
   }

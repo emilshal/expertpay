@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  createFleetMember,
   fleets,
   fleetMembers,
   getActiveFleetName,
@@ -20,8 +21,17 @@ export default function FleetMembersPage() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [savingMemberId, setSavingMemberId] = useState<number | null>(null);
+  const [addingMember, setAddingMember] = useState(false);
+  const [newDriverPhone, setNewDriverPhone] = useState("");
+  const [newDriverFirstName, setNewDriverFirstName] = useState("");
+  const [newDriverLastName, setNewDriverLastName] = useState("");
+  const [newDriverEmail, setNewDriverEmail] = useState("");
 
   const canLoad = useMemo(() => Boolean(selectedFleet.trim()), [selectedFleet]);
+  const canAddDriver = useMemo(
+    () => Boolean(selectedFleet.trim() && newDriverPhone.trim()),
+    [newDriverPhone, selectedFleet]
+  );
 
   async function loadFleets() {
     const data = await fleets();
@@ -83,6 +93,41 @@ export default function FleetMembersPage() {
     }
   }
 
+  async function addDriver() {
+    if (!canAddDriver) return;
+
+    setAddingMember(true);
+    setError("");
+    setMessage("");
+    try {
+      const member = await createFleetMember({
+        fleet_name: selectedFleet,
+        phone_number: newDriverPhone,
+        first_name: newDriverFirstName.trim(),
+        last_name: newDriverLastName.trim(),
+        email: newDriverEmail.trim(),
+        role: "driver"
+      });
+      setMessage(pick(`Added driver ${member.phone_number}.`, `მძღოლი დაემატა: ${member.phone_number}.`));
+      setNewDriverPhone("");
+      setNewDriverFirstName("");
+      setNewDriverLastName("");
+      setNewDriverEmail("");
+      await loadMembers();
+    } catch (err) {
+      const text = err instanceof Error ? err.message : "";
+      if (text.includes("already registered")) {
+        setError(pick("This phone number is already registered.", "ეს ტელეფონის ნომერი უკვე რეგისტრირებულია."));
+      } else if (text.includes("Only fleet admin/owner")) {
+        setError(pick("Only fleet admin/owner can add drivers.", "მძღოლის დამატება მხოლოდ ფლიტის ადმინს ან მფლობელს შეუძლია."));
+      } else {
+        setError(pick("Could not add driver.", "მძღოლის დამატება ვერ მოხერხდა."));
+      }
+    } finally {
+      setAddingMember(false);
+    }
+  }
+
   useEffect(() => {
     void loadFleets();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -125,6 +170,63 @@ export default function FleetMembersPage() {
 
         <button className="btn btnGhost" type="button" onClick={() => void loadMembers()}>
           {loading ? pick("Loading...", "იტვირთება...") : pick("Refresh Members", "წევრების განახლება")}
+        </button>
+      </div>
+
+      <div className="transferForm">
+        <div className="cardTitleRow">
+          <h2>{pick("Add Driver", "მძღოლის დამატება")}</h2>
+        </div>
+        <label className="transferField">
+          <span className="transferLabel">{pick("Phone number", "ტელეფონის ნომერი")}</span>
+          <div className="phoneInputWrap">
+            <span className="phonePrefix">+995</span>
+            <input
+              className="transferInput phoneInput"
+              type="tel"
+              inputMode="numeric"
+              placeholder="598950002"
+              value={newDriverPhone}
+              onChange={(event) => {
+                let value = event.target.value.replace(/\D/g, "");
+                if (value.startsWith("995")) value = value.slice(3);
+                setNewDriverPhone(value.slice(0, 9));
+              }}
+            />
+          </div>
+        </label>
+        <div className="authGrid">
+          <label className="transferField">
+            <span className="transferLabel">{pick("First name", "სახელი")}</span>
+            <input
+              className="transferInput"
+              type="text"
+              value={newDriverFirstName}
+              onChange={(event) => setNewDriverFirstName(event.target.value)}
+            />
+          </label>
+          <label className="transferField">
+            <span className="transferLabel">{pick("Last name", "გვარი")}</span>
+            <input
+              className="transferInput"
+              type="text"
+              value={newDriverLastName}
+              onChange={(event) => setNewDriverLastName(event.target.value)}
+            />
+          </label>
+        </div>
+        <label className="transferField">
+          <span className="transferLabel">{pick("Email", "ელფოსტა")}</span>
+          <input
+            className="transferInput"
+            type="email"
+            placeholder="driver@example.com"
+            value={newDriverEmail}
+            onChange={(event) => setNewDriverEmail(event.target.value)}
+          />
+        </label>
+        <button className="btn btnPrimary" type="button" onClick={() => void addDriver()} disabled={!canAddDriver || addingMember}>
+          {addingMember ? pick("Adding...", "ემატება...") : pick("Add driver", "მძღოლის დამატება")}
         </button>
       </div>
 

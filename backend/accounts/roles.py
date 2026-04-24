@@ -23,6 +23,12 @@ def get_request_fleet_binding(*, user, request):
     if fleet_name:
         bindings = bindings.filter(fleet__name__iexact=fleet_name)
 
+    active_role = (request.headers.get("X-Active-Role") or request.query_params.get("role") or "").strip().lower()
+    if active_role in ROLE_RANK:
+        role_bindings = bindings.filter(role=active_role)
+        if role_bindings.exists():
+            bindings = role_bindings
+
     if not bindings.exists():
         return None
 

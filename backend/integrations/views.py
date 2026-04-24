@@ -1,5 +1,6 @@
 from decimal import Decimal
 from datetime import timedelta
+from urllib.parse import urlparse
 
 from django.conf import settings
 from django.db.models import Count, Max, Q, Sum
@@ -146,6 +147,37 @@ def _sanitize_token_test_result(result: dict):
     if response:
         payload["response"] = response
     return payload
+
+
+def _is_placeholder_public_url(value: str) -> bool:
+    normalized = (value or "").strip().lower()
+    if not normalized:
+        return True
+    return "replace-with-your-public-domain" in normalized
+
+
+def _frontend_origin_from_request(request) -> str:
+    origin = (request.headers.get("Origin") or "").strip()
+    if origin.startswith("http://") or origin.startswith("https://"):
+        return origin.rstrip("/")
+
+    referer = (request.headers.get("Referer") or "").strip()
+    if referer.startswith("http://") or referer.startswith("https://"):
+        parsed = urlparse(referer)
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+
+    return ""
+
+
+def _resolve_bog_payments_public_url(request, configured_url: str, path: str) -> str:
+    if not _is_placeholder_public_url(configured_url):
+        return configured_url
+
+    origin = _frontend_origin_from_request(request)
+    if not origin:
+        return configured_url
+    return f"{origin}{path}"
 
 
 class ConnectYandexView(APIView):
@@ -557,6 +589,13 @@ class CreateBogCardOrderView(APIView):
         serializer.is_valid(raise_exception=True)
 
         connection = _get_or_create_bog_payments_connection(request.user)
+        callback_url = _resolve_bog_payments_public_url(
+            request,
+            settings.BOG_PAYMENTS_CALLBACK_URL,
+            "/api/integrations/bog-payments/callback/",
+        )
+        success_url = _resolve_bog_payments_public_url(request, settings.BOG_PAYMENTS_SUCCESS_URL, "/card-topup")
+        fail_url = _resolve_bog_payments_public_url(request, settings.BOG_PAYMENTS_FAIL_URL, "/card-topup")
         try:
             order = create_bog_card_order(
                 connection=connection,
@@ -566,6 +605,9 @@ class CreateBogCardOrderView(APIView):
                 currency=serializer.validated_data["currency"],
                 save_card=serializer.validated_data["save_card"],
                 parent_order_id=serializer.validated_data.get("parent_order_id", ""),
+                callback_url=callback_url,
+                success_url=success_url,
+                fail_url=fail_url,
             )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
