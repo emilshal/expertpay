@@ -13,6 +13,13 @@ class ProviderConnection(models.Model):
         BANK_SIMULATOR = "bank_sim", "Bank Simulator"
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="provider_connections")
+    fleet = models.ForeignKey(
+        Fleet,
+        on_delete=models.CASCADE,
+        related_name="provider_connections",
+        null=True,
+        blank=True,
+    )
     provider = models.CharField(max_length=20, choices=Provider.choices)
     external_account_id = models.CharField(max_length=100)
     status = models.CharField(max_length=20, default="active")

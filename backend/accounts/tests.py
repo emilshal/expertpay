@@ -12,6 +12,7 @@ from rest_framework.test import APITestCase
 
 from accounts.models import DriverFleetMembership, Fleet, FleetPhoneBinding, LoginCodeChallenge
 from accounts.roles import get_request_fleet_binding, is_platform_admin, meets_min_role
+from integrations.models import ProviderConnection
 
 
 class MockJsonHttpResponse:
@@ -514,7 +515,16 @@ class OtpProviderIntegrationTests(APITestCase):
 
 
 class FleetRegistrationApiTests(APITestCase):
-    def test_register_fleet_creates_owner_binding(self):
+    @patch("integrations.services.test_yandex_credentials")
+    def test_register_fleet_creates_owner_binding(self, mocked_test_yandex):
+        mocked_test_yandex.return_value = {
+            "ok": True,
+            "http_status": 200,
+            "detail": "Yandex credentials verified.",
+            "park": {"name": "Fresh Park", "city": "Tbilisi"},
+            "response": {},
+        }
+
         response = self.client.post(
             reverse("fleet-register"),
             data={
@@ -523,6 +533,9 @@ class FleetRegistrationApiTests(APITestCase):
                 "first_name": "Fleet",
                 "last_name": "Owner",
                 "email": "owner@example.com",
+                "yandex_park_id": "park_123",
+                "yandex_client_id": "client_123",
+                "yandex_api_key": "key_123",
             },
             format="json",
         )
@@ -535,6 +548,11 @@ class FleetRegistrationApiTests(APITestCase):
         self.assertEqual(binding.user.first_name, "Fleet")
         self.assertEqual(binding.user.email, "owner@example.com")
         self.assertTrue(DriverFleetMembership.objects.filter(user=binding.user, fleet=fleet).exists())
+        connection = ProviderConnection.objects.get(fleet=fleet, provider=ProviderConnection.Provider.YANDEX)
+        self.assertEqual(connection.external_account_id, "park_123")
+        self.assertEqual(connection.config["park_name"], "Fresh Park")
+        self.assertEqual(connection.config["client_id"], "client_123")
+        self.assertEqual(connection.config["api_key"], "key_123")
 
     def test_register_fleet_rejects_existing_fleet_name(self):
         Fleet.objects.create(name="Fresh Fleet")
@@ -547,8 +565,31 @@ class FleetRegistrationApiTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    def test_register_driver_creates_driver_binding_for_existing_fleet(self):
+    @patch("integrations.services.find_yandex_driver_by_phone")
+    def test_register_driver_creates_driver_binding_for_existing_fleet(self, mocked_find_driver):
         fleet = Fleet.objects.create(name="Fresh Fleet")
+        owner = User.objects.create_user(username="fresh_owner", password="pass1234")
+        ProviderConnection.objects.create(
+            user=owner,
+            fleet=fleet,
+            provider=ProviderConnection.Provider.YANDEX,
+            external_account_id="park_123",
+            status="active",
+            config={"park_id": "park_123", "client_id": "client_123", "api_key": "key_123"},
+        )
+        mocked_find_driver.return_value = {
+            "ok": True,
+            "matches": [
+                {
+                    "external_driver_id": "driver_123",
+                    "display_name": "Fresh Driver",
+                    "phone_number": "+995598123457",
+                    "current_balance": "12.34",
+                    "balance_currency": "GEL",
+                    "raw": {"driver_profile": {"id": "driver_123"}},
+                }
+            ],
+        }
 
         response = self.client.post(
             reverse("driver-register"),
@@ -566,4 +607,24 @@ class FleetRegistrationApiTests(APITestCase):
         binding = FleetPhoneBinding.objects.get(fleet=fleet, phone_number="598123457")
         self.assertEqual(binding.role, FleetPhoneBinding.Role.DRIVER)
         self.assertEqual(binding.user.first_name, "Fresh")
-        self.assertTrue(DriverFleetMembership.objects.filter(user=binding.user, fleet=fleet).exists())
+        membership = DriverFleetMembership.objects.get(user=binding.user, fleet=fleet)
+        self.assertEqual(membership.yandex_external_driver_id, "driver_123")
+        self.assertEqual(membership.yandex_display_name, "Fresh Driver")
+        self.assertEqual(str(membership.yandex_current_balance), "12.340000")
+
+    def test_register_driver_requires_active_yandex_connection(self):
+        Fleet.objects.create(name="Fresh Fleet")
+
+        response = self.client.post(
+            reverse("driver-register"),
+            data={
+                "fleet_name": "Fresh Fleet",
+                "phone_number": "598123457",
+                "first_name": "Fresh",
+                "last_name": "Driver",
+                "email": "driver@example.com",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)

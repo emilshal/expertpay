@@ -20,6 +20,9 @@ export default function LoginPage({ onAuthenticated }: Props) {
   const [registrationFirstName, setRegistrationFirstName] = useState("");
   const [registrationLastName, setRegistrationLastName] = useState("");
   const [registrationEmail, setRegistrationEmail] = useState("");
+  const [yandexParkId, setYandexParkId] = useState("");
+  const [yandexClientId, setYandexClientId] = useState("");
+  const [yandexApiKey, setYandexApiKey] = useState("");
   const [challengeId, setChallengeId] = useState<number | null>(null);
   const [code, setCode] = useState("");
   const [loading, setLoading] = useState(false);
@@ -70,8 +73,8 @@ export default function LoginPage({ onAuthenticated }: Props) {
   );
 
   const canRegisterFleet = useMemo(
-    () => Boolean(registrationFleetName.trim() && phone.trim()),
-    [registrationFleetName, phone]
+    () => Boolean(registrationFleetName.trim() && phone.trim() && yandexParkId.trim() && yandexClientId.trim() && yandexApiKey.trim()),
+    [registrationFleetName, phone, yandexApiKey, yandexClientId, yandexParkId]
   );
 
   const canRegisterDriver = useMemo(
@@ -89,7 +92,10 @@ export default function LoginPage({ onAuthenticated }: Props) {
         phone_number: phone.trim(),
         first_name: registrationFirstName.trim(),
         last_name: registrationLastName.trim(),
-        email: registrationEmail.trim()
+        email: registrationEmail.trim(),
+        yandex_park_id: yandexParkId.trim(),
+        yandex_client_id: yandexClientId.trim(),
+        yandex_api_key: yandexApiKey.trim()
       });
       setFleetList((current) => [fleet, ...current.filter((item) => item.id !== fleet.id)]);
       setSelectedFleetName(fleet.name);
@@ -103,6 +109,8 @@ export default function LoginPage({ onAuthenticated }: Props) {
         setError(pick("Fleet already exists.", "ფლიტი უკვე არსებობს."));
       } else if (message.includes("phone number is already registered")) {
         setError(pick("This phone number is already registered.", "ეს ტელეფონის ნომერი უკვე რეგისტრირებულია."));
+      } else if (message.includes("Yandex") || message.includes("yandex")) {
+        setError(pick("Yandex credentials could not be verified.", "Yandex მონაცემების შემოწმება ვერ მოხერხდა."));
       } else {
         setError(pick("Could not register fleet.", "ფლიტის რეგისტრაცია ვერ მოხერხდა."));
       }
@@ -132,6 +140,8 @@ export default function LoginPage({ onAuthenticated }: Props) {
         setError(pick("Fleet not found.", "ფლიტი ვერ მოიძებნა."));
       } else if (message.includes("phone number is already registered")) {
         setError(pick("This phone number is already registered.", "ეს ტელეფონის ნომერი უკვე რეგისტრირებულია."));
+      } else if (message.includes("Yandex") || message.includes("yandex")) {
+        setError(pick("This phone number was not found in the fleet's Yandex account.", "ეს ნომერი ფლიტის Yandex ანგარიშში ვერ მოიძებნა."));
       } else {
         setError(pick("Could not register driver.", "მძღოლის რეგისტრაცია ვერ მოხერხდა."));
       }
@@ -256,16 +266,48 @@ export default function LoginPage({ onAuthenticated }: Props) {
               </div>
 
               {registrationType === "fleet" ? (
-                <label className="transferField">
-                  <span className="transferLabel">{pick("Fleet name", "ფლიტის სახელი")}</span>
-                  <input
-                    className="transferInput"
-                    type="text"
-                    placeholder={pick("Example Taxi Fleet", "მაგალითად ტაქსის ფლიტი")}
-                    value={registrationFleetName}
-                    onChange={(event) => setRegistrationFleetName(event.target.value)}
-                  />
-                </label>
+                <>
+                  <label className="transferField">
+                    <span className="transferLabel">{pick("Fleet name", "ფლიტის სახელი")}</span>
+                    <input
+                      className="transferInput"
+                      type="text"
+                      placeholder={pick("Example Taxi Fleet", "მაგალითად ტაქსის ფლიტი")}
+                      value={registrationFleetName}
+                      onChange={(event) => setRegistrationFleetName(event.target.value)}
+                    />
+                  </label>
+                  <label className="transferField">
+                    <span className="transferLabel">{pick("Yandex Park ID", "Yandex Park ID")}</span>
+                    <input
+                      className="transferInput"
+                      type="text"
+                      placeholder="ed8ed9850cc643b9b9ddae94ad6175bb"
+                      value={yandexParkId}
+                      onChange={(event) => setYandexParkId(event.target.value)}
+                    />
+                  </label>
+                  <label className="transferField">
+                    <span className="transferLabel">{pick("Yandex Client ID", "Yandex Client ID")}</span>
+                    <input
+                      className="transferInput"
+                      type="text"
+                      placeholder={pick("Client ID from Yandex", "Client ID Yandex-იდან")}
+                      value={yandexClientId}
+                      onChange={(event) => setYandexClientId(event.target.value)}
+                    />
+                  </label>
+                  <label className="transferField">
+                    <span className="transferLabel">{pick("Yandex API Key", "Yandex API Key")}</span>
+                    <input
+                      className="transferInput"
+                      type="password"
+                      placeholder={pick("API key from Yandex", "API key Yandex-იდან")}
+                      value={yandexApiKey}
+                      onChange={(event) => setYandexApiKey(event.target.value)}
+                    />
+                  </label>
+                </>
               ) : (
                 <>
                   <label className="transferField">

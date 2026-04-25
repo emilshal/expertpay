@@ -706,6 +706,9 @@ export async function registerFleet(input: {
   first_name?: string;
   last_name?: string;
   email?: string;
+  yandex_park_id: string;
+  yandex_client_id: string;
+  yandex_api_key: string;
 }) {
   return request<Fleet>("/api/auth/fleets/register/", {
     method: "POST",
@@ -715,7 +718,10 @@ export async function registerFleet(input: {
       phone_number: input.phone_number,
       first_name: input.first_name ?? "",
       last_name: input.last_name ?? "",
-      email: input.email ?? ""
+      email: input.email ?? "",
+      yandex_park_id: input.yandex_park_id,
+      yandex_client_id: input.yandex_client_id,
+      yandex_api_key: input.yandex_api_key
     })
   });
 }

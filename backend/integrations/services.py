@@ -1032,7 +1032,16 @@ def _build_bog_document_payload(*, withdrawal: WithdrawalRequest):
     return payload, unique_id
 
 
-def _yandex_request(*, method: str, endpoint: str, query: dict | None = None, body: dict | None = None):
+def _yandex_request(
+    *,
+    method: str,
+    endpoint: str,
+    query: dict | None = None,
+    body: dict | None = None,
+    park_id: str | None = None,
+    client_id: str | None = None,
+    api_key: str | None = None,
+):
     query_string = f"?{urlencode(query)}" if query else ""
     url = f"{settings.YANDEX_BASE_URL}{endpoint}{query_string}"
     data = json.dumps(body).encode("utf-8") if body is not None else None
@@ -1041,8 +1050,8 @@ def _yandex_request(*, method: str, endpoint: str, query: dict | None = None, bo
         method=method,
         data=data,
         headers={
-            "X-Client-ID": settings.YANDEX_CLIENT_ID,
-            "X-API-Key": settings.YANDEX_API_KEY,
+            "X-Client-ID": client_id or settings.YANDEX_CLIENT_ID,
+            "X-API-Key": api_key or settings.YANDEX_API_KEY,
             "Accept-Language": "en",
             "Content-Type": "application/json",
         },
@@ -1102,6 +1111,96 @@ def _yandex_request(*, method: str, endpoint: str, query: dict | None = None, bo
     }
 
 
+def _yandex_connection_credentials(connection: ProviderConnection | None = None) -> dict:
+    config = connection.config if connection is not None else {}
+    return {
+        "park_id": (config or {}).get("park_id") or settings.YANDEX_PARK_ID,
+        "client_id": (config or {}).get("client_id") or settings.YANDEX_CLIENT_ID,
+        "api_key": (config or {}).get("api_key") or settings.YANDEX_API_KEY,
+    }
+
+
+def _park_query(*, park_id: str):
+    return {"park": {"id": park_id}}
+
+
+def test_yandex_credentials(*, park_id: str, client_id: str, api_key: str):
+    missing = []
+    if not park_id:
+        missing.append("park_id")
+    if not client_id:
+        missing.append("client_id")
+    if not api_key:
+        missing.append("api_key")
+    if missing:
+        return {
+            "ok": False,
+            "http_status": None,
+            "detail": f"Missing Yandex fields: {', '.join(missing)}",
+            "park": None,
+            "response": {"missing": missing},
+        }
+
+    response = _yandex_request(
+        method="POST",
+        endpoint="/v1/parks/driver-profiles/list",
+        body={"query": _park_query(park_id=park_id), "limit": 1},
+        park_id=park_id,
+        client_id=client_id,
+        api_key=api_key,
+    )
+    body = response["body"] if isinstance(response["body"], dict) else {}
+    parks = body.get("parks") if isinstance(body.get("parks"), list) else []
+    park = parks[0] if parks else None
+    if response["ok"]:
+        return {
+            "ok": True,
+            "http_status": response["http_status"],
+            "detail": "Yandex credentials verified.",
+            "park": park,
+            "response": body,
+        }
+    return {
+        "ok": False,
+        "http_status": response["http_status"],
+        "detail": "Yandex credential test failed.",
+        "park": park,
+        "response": body,
+    }
+
+
+def create_fleet_yandex_connection(*, fleet: Fleet, user: User, park_id: str, client_id: str, api_key: str):
+    test_result = test_yandex_credentials(park_id=park_id, client_id=client_id, api_key=api_key)
+    if not test_result["ok"]:
+        return None, test_result
+
+    park = test_result.get("park") or {}
+    connection, _created = ProviderConnection.objects.update_or_create(
+        provider=ProviderConnection.Provider.YANDEX,
+        external_account_id=park_id,
+        defaults={
+            "user": user,
+            "fleet": fleet,
+            "status": "active",
+            "config": {
+                "mode": "live",
+                "park_id": park_id,
+                "park_name": park.get("name", ""),
+                "park_city": park.get("city", ""),
+                "client_id": client_id,
+                "api_key": api_key,
+                "last_connection_test": {
+                    "ok": True,
+                    "checked_at": timezone.now().isoformat(),
+                    "http_status": test_result.get("http_status"),
+                    "detail": test_result.get("detail", ""),
+                },
+            },
+        },
+    )
+    return connection, test_result
+
+
 def _extract_items(payload: dict, keys: tuple[str, ...]):
     for key in keys:
         value = payload.get(key)
@@ -1149,6 +1248,9 @@ def _extract_transaction_id(item: dict) -> str:
 
 
 def _extract_driver_id(item: dict) -> str:
+    profile = item.get("driver_profile") if isinstance(item.get("driver_profile"), dict) else {}
+    if profile.get("id"):
+        return str(profile["id"])
     for key in ("driver_id", "contractor_id", "profile_id", "id"):
         value = item.get(key)
         if value:
@@ -1157,6 +1259,9 @@ def _extract_driver_id(item: dict) -> str:
 
 
 def _extract_driver_name_parts(item: dict):
+    profile = item.get("driver_profile") if isinstance(item.get("driver_profile"), dict) else {}
+    if profile:
+        return str(profile.get("first_name") or "").strip(), str(profile.get("last_name") or "").strip()
     first_name = str(item.get("first_name") or item.get("name") or "").strip()
     last_name = str(item.get("last_name") or "").strip()
     if not first_name and "full_name" in item and isinstance(item["full_name"], str):
@@ -1169,6 +1274,10 @@ def _extract_driver_name_parts(item: dict):
 
 
 def _extract_driver_phone(item: dict) -> str:
+    profile = item.get("driver_profile") if isinstance(item.get("driver_profile"), dict) else {}
+    phones = profile.get("phones") if isinstance(profile.get("phones"), list) else []
+    if phones:
+        return str(phones[0])
     for key in ("phone", "phone_number", "driver_phone"):
         value = item.get(key)
         if value:
@@ -1177,10 +1286,88 @@ def _extract_driver_phone(item: dict) -> str:
 
 
 def _extract_driver_status(item: dict) -> str:
+    profile = item.get("driver_profile") if isinstance(item.get("driver_profile"), dict) else {}
+    if profile.get("work_status"):
+        return str(profile["work_status"])
     for key in ("status", "is_enabled", "is_active"):
         if key in item:
             return str(item.get(key))
     return ""
+
+
+def _normalize_phone_digits(value: str) -> str:
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    if digits.startswith("995") and len(digits) == 12:
+        digits = digits[3:]
+    return digits
+
+
+def _extract_yandex_current_balance(item: dict):
+    accounts = item.get("accounts") if isinstance(item.get("accounts"), list) else []
+    current_accounts = [account for account in accounts if account.get("type") == "current"] or accounts
+    if not current_accounts:
+        return Decimal("0.00"), "GEL"
+    account = current_accounts[0]
+    return _to_decimal(account.get("balance")), str(account.get("currency") or "GEL")
+
+
+def _yandex_driver_snapshot(item: dict):
+    first_name, last_name = _extract_driver_name_parts(item)
+    balance, currency = _extract_yandex_current_balance(item)
+    return {
+        "external_driver_id": _extract_driver_id(item),
+        "display_name": f"{first_name} {last_name}".strip(),
+        "phone_number": _extract_driver_phone(item),
+        "current_balance": balance,
+        "balance_currency": currency,
+        "raw": item,
+    }
+
+
+def find_yandex_driver_by_phone(*, connection: ProviderConnection, phone_number: str, limit: int = 1000):
+    credentials = _yandex_connection_credentials(connection)
+    target_digits = _normalize_phone_digits(phone_number)
+    if not target_digits:
+        return {"ok": False, "matches": [], "detail": "Phone number is required."}
+
+    matches = []
+    total = None
+    for offset in range(0, 10000, limit):
+        response = _yandex_request(
+            method="POST",
+            endpoint="/v1/parks/driver-profiles/list",
+            body={
+                "query": _park_query(park_id=credentials["park_id"]),
+                "limit": limit,
+                "offset": offset,
+            },
+            **credentials,
+        )
+        if not response["ok"]:
+            return {
+                "ok": False,
+                "matches": matches,
+                "detail": "Yandex driver lookup failed.",
+                "http_status": response["http_status"],
+                "response": response["body"],
+            }
+
+        body = response["body"] if isinstance(response["body"], dict) else {}
+        items = _extract_items(body, ("driver_profiles", "profiles", "items"))
+        total = body.get("total") if isinstance(body.get("total"), int) else total
+        for item in items:
+            phone_digits = _normalize_phone_digits(_extract_driver_phone(item))
+            if phone_digits == target_digits:
+                matches.append(_yandex_driver_snapshot(item))
+
+        if matches or not items or (total is not None and offset + limit >= total):
+            break
+
+    return {
+        "ok": True,
+        "matches": matches,
+        "detail": "Yandex driver lookup completed.",
+    }
 
 
 def _extract_transaction_timestamp(item: dict):
