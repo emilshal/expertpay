@@ -90,6 +90,18 @@ def _get_active_fleet_bog_connection(*, fleet):
 
 
 def _get_active_fleet_yandex_connection(*, fleet):
+    connection = (
+        ProviderConnection.objects.filter(
+            fleet=fleet,
+            provider=ProviderConnection.Provider.YANDEX,
+            status="active",
+        )
+        .order_by("-created_at", "id")
+        .first()
+    )
+    if connection is not None:
+        return connection
+
     bindings = FleetPhoneBinding.objects.filter(
         fleet=fleet,
         is_active=True,

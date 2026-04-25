@@ -1,6 +1,7 @@
 import logging
 from decimal import Decimal
 
+from django.db.models import Q
 from django.utils import timezone
 
 from .models import ProviderConnection
@@ -18,12 +19,15 @@ def _filtered_connections(*, provider, user_id=None, fleet_name=None, connection
         queryset = queryset.filter(user_id=user_id)
     if fleet_name:
         queryset = queryset.filter(
-            user__fleet_phone_bindings__fleet__name=fleet_name,
-            user__fleet_phone_bindings__is_active=True,
+            Q(fleet__name=fleet_name)
+            | Q(
+                user__fleet_phone_bindings__fleet__name=fleet_name,
+                user__fleet_phone_bindings__is_active=True,
+            )
         )
     if connection_id is not None:
         queryset = queryset.filter(id=connection_id)
-    return queryset.select_related("user").distinct().order_by("id")
+    return queryset.select_related("user", "fleet").distinct().order_by("id")
 
 
 def _record_connection_run(connection, *, state_key, ok, payload, mark_error_status=False):
