@@ -266,6 +266,9 @@ def _send_verify_ge_otp(*, phone_number: str) -> dict:
         payload.get("requestId")
         or payload.get("request_id")
         or payload.get("id")
+        or (payload.get("data") or {}).get("requestId")
+        or (payload.get("data") or {}).get("request_id")
+        or (payload.get("data") or {}).get("id")
     )
     if not payload.get("success") or not request_id:
         error_status = 429 if status_code == 429 else 502
