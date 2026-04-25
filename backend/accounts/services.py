@@ -247,6 +247,7 @@ def _send_verify_ge_otp(*, phone_number: str) -> dict:
     delivery_phone_number = settings.OTP_TEST_PHONE_NUMBER or phone_number
     normalized_phone = normalize_phone_number(delivery_phone_number)
     phone_with_plus = f"+{normalized_phone}" if normalized_phone and not normalized_phone.startswith("+") else normalized_phone
+    logger.info("Sending Verify.ge OTP to configured delivery number ending in %s", normalized_phone[-4:])
     payload, status_code = _verify_ge_request(
         endpoint="/otp/send",
         body={
@@ -265,6 +266,7 @@ def _send_verify_ge_otp(*, phone_number: str) -> dict:
     if not payload.get("success") or not request_id:
         error_status = 429 if status_code == 429 else 502
         detail = _otp_provider_error_detail(payload, fallback="OTP send failed.")
+        logger.warning("Verify.ge OTP send failed with status %s and payload %s", status_code, payload)
         raise OtpDeliveryError(detail, status_code=error_status)
 
     return {
