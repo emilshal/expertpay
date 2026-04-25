@@ -221,6 +221,7 @@ def _verify_ge_request(*, endpoint: str, method: str = "POST", body: dict | None
         data=json.dumps(body).encode("utf-8") if body is not None else None,
         headers={
             "X-API-Key": settings.OTP_API_KEY,
+            "Authorization": f"Bearer {settings.OTP_API_KEY}",
             "Content-Type": "application/json",
             "Accept": "application/json",
             "Idempotency-Key": str(uuid.uuid4()),
