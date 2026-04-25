@@ -1,6 +1,7 @@
 import json
 import logging
 import secrets
+import uuid
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -222,6 +223,8 @@ def _verify_ge_request(*, endpoint: str, method: str = "POST", body: dict | None
             "X-API-Key": settings.OTP_API_KEY,
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "Idempotency-Key": str(uuid.uuid4()),
+            "User-Agent": "ExpertPay/1.0 (+https://expertpay-expert-pay.vercel.app)",
         },
     )
 
