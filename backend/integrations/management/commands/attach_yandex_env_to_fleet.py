@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
+import json
 
 from accounts.models import Fleet, FleetPhoneBinding
 from integrations.services import create_fleet_yandex_connection
@@ -70,7 +71,15 @@ class Command(BaseCommand):
             api_key=settings.YANDEX_API_KEY,
         )
         if connection is None:
-            raise CommandError(result.get("detail", "Yandex connection failed."))
+            response = result.get("response") or {}
+            try:
+                response_text = json.dumps(response, ensure_ascii=False)[:1200]
+            except TypeError:
+                response_text = str(response)[:1200]
+            raise CommandError(
+                f"{result.get('detail', 'Yandex connection failed.')} "
+                f"http_status={result.get('http_status')} response={response_text}"
+            )
 
         park = result.get("park") or {}
         self.stdout.write(
