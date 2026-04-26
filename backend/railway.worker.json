@@ -1,6 +1,6 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
   "deploy": {
-    "startCommand": "sh -c 'while true; do python manage.py import_yandex_driver_balance \"New Taxi\" 577775892 || true; sleep 10; done'"
+    "startCommand": "sh -c 'python manage.py attach_yandex_env_to_fleet \"New Taxi\" --owner-phone 577775892 || true; while true; do python manage.py import_yandex_driver_balance \"New Taxi\" 577775892 || true; sleep 10; done'"
   }
 }
