@@ -379,6 +379,9 @@ export default function OwnerDashboardPage() {
                 <span>{pick("Fleet reserve", "ფლიტის რეზერვი")}</span>
                 <strong>{formatMoney(summary?.reserve_balance ?? "0.00", currency)}</strong>
                 <small>{pick("Money currently funded in ExpertPay", "ExpertPay-ში მიმდინარე შევსებული თანხა")}</small>
+                <Link className="ownerReserveFundButton" to="/deposits">
+                  {pick("Fund reserve", "რეზერვის შევსება")}
+                </Link>
               </article>
               <article className="ownerControlStat">
                 <span>{pick("Pending payouts", "მოლოდინში გატანები")}</span>

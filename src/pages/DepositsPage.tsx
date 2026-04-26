@@ -3,8 +3,6 @@ import { useNavigate } from "react-router-dom";
 import {
   depositInstructions,
   depositsList,
-  getActiveRole,
-  syncDeposits,
   type DepositInstruction,
   type DepositItem
 } from "../lib/api";
@@ -13,8 +11,6 @@ import { useI18n } from "../lib/i18n";
 export default function DepositsPage() {
   const { pick } = useI18n();
   const navigate = useNavigate();
-  const role = getActiveRole();
-  const isOwnerAdmin = role === "owner" || role === "admin";
   const [instructions, setInstructions] = useState<DepositInstruction | null>(null);
   const [deposits, setDeposits] = useState<DepositItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -39,25 +35,6 @@ export default function DepositsPage() {
     void loadData();
   }, []);
 
-  async function runSync() {
-    setLoading(true);
-    setError("");
-    setMessage("");
-    try {
-      const result = await syncDeposits();
-      setMessage(
-        pick(
-          `Checked ${result.checked_count} bank activity item(s), matched ${result.matched_count}, credited ${result.credited_count} for ${result.credited_total} GEL.`,
-          `შემოწმდა ${result.checked_count} საბანკო ჩანაწერი, დაემთხვა ${result.matched_count}, ჩაირიცხა ${result.credited_count} ჩანაწერი ${result.credited_total} GEL-ზე.`
-        )
-      );
-      await loadData();
-    } catch (syncError) {
-      setError(syncError instanceof Error ? syncError.message : pick("Deposit sync failed.", "შევსების სინქი ვერ შესრულდა."));
-      setLoading(false);
-    }
-  }
-
   async function copyValue(value: string) {
     try {
       await navigator.clipboard.writeText(value);
@@ -70,30 +47,23 @@ export default function DepositsPage() {
   const creditedTotal = deposits.reduce((sum, item) => sum + Number(item.amount || 0), 0);
 
   return (
-    <section className="card">
-      <div className="cardTitleRow">
-        <h1>{pick("Deposits", "შევსებები")}</h1>
-        <div className="toolbarRow">
-          <button className="btn btnGhost" type="button" onClick={() => navigate("/card-topup")}>
-            {pick("Card top-up", "ბარათით შევსება")}
-          </button>
-          {isOwnerAdmin ? (
-            <button className="btn btnGhost" type="button" onClick={() => navigate("/deposit-review")}>
-              {pick("Review Queue", "განხილვის რიგი")}
-            </button>
-          ) : null}
-          <button className="btn btnGhost" type="button" onClick={() => void runSync()}>
-            {loading ? pick("Syncing...", "სინქდება...") : pick("Sync from BoG", "BoG-დან სინქი")}
-          </button>
+    <section className="card reservePage">
+      <button className="reserveBackButton" type="button" onClick={() => navigate("/dashboard")} aria-label={pick("Back to dashboard", "დეშბორდზე დაბრუნება")}>
+        <span aria-hidden="true">←</span>
+      </button>
+
+      <div className="reserveHero">
+        <div>
+          <p className="reserveEyebrow">{pick("Fleet reserve", "ფლიტის რეზერვი")}</p>
+          <h1>{pick("Add money to your reserve", "რეზერვის შევსება")}</h1>
+          <p className="muted">
+            {pick(
+              "Make one bank transfer and write your fleet code in the comment. We will add the money to your reserve after it arrives.",
+              "გააკეთეთ ერთი საბანკო გადარიცხვა და კომენტარში ჩაწერეთ თქვენი ფლიტის კოდი. თანხა რეზერვზე აისახება მიღების შემდეგ."
+            )}
+          </p>
         </div>
       </div>
-
-      <p className="muted">
-        {pick(
-          "Fund your fleet reserve by bank transfer. Use the exact fleet reference code below so ExpertPay can match the money to your fleet after the next BoG sync.",
-          "შეავსეთ ფლიტის რეზერვი საბანკო გადარიცხვით. გამოიყენეთ ქვემოთ მოცემული ზუსტი ფლიტის კოდი, რომ ExpertPay-მ შემდეგ BoG სინქზე თანხა სწორ ფლიტს მიაბას."
-        )}
-      </p>
 
       {error ? <p className="statusError">{error}</p> : null}
       {message ? <p className="statusHint">{message}</p> : null}
@@ -110,47 +80,50 @@ export default function DepositsPage() {
       </div>
 
       {instructions ? (
-        <div className="txList" role="list" style={{ marginTop: "14px" }}>
-          <div className="txRow" role="listitem">
-            <div className="txMain">
-              <div className="txTitle">{pick("Step 1: Send to this bank", "ნაბიჯი 1: ჩარიცხეთ ამ ბანკში")}</div>
+        <div className="reserveSteps" role="list">
+          <div className="reserveStep" role="listitem">
+            <div className="reserveStepNumber">1</div>
+            <div className="reserveStepBody">
+              <div className="txTitle">{pick("Send money to this account", "გადარიცხეთ თანხა ამ ანგარიშზე")}</div>
               <div className="txSub">{instructions.bank_name}</div>
-            </div>
-          </div>
-
-          <div className="txRow" role="listitem">
-            <div className="txMain">
-              <div className="txTitle">{pick("Company account holder", "კომპანიის ანგარიშის მფლობელი")}</div>
               <div className="txSub">{instructions.account_holder_name || pick("Company account", "კომპანიის ანგარიში")}</div>
+              <div className="reserveCopyBox">
+                <span>{instructions.account_number}</span>
+                <button className="btn btnSoft" type="button" onClick={() => void copyValue(instructions.account_number)}>
+                  {pick("Copy", "კოპირება")}
+                </button>
+              </div>
             </div>
           </div>
 
-          <div className="txRow" role="listitem">
-            <div className="txMain">
-              <div className="txTitle">{pick("Destination account number", "მიმღების ანგარიშის ნომერი")}</div>
-              <div className="txSub">{instructions.account_number}</div>
-            </div>
-            <button className="btn btnSoft" type="button" onClick={() => void copyValue(instructions.account_number)}>
-              {pick("Copy", "კოპირება")}
-            </button>
-          </div>
-
-          <div className="txRow" role="listitem">
-            <div className="txMain">
-              <div className="txTitle">{pick("Step 2: Put this exact fleet reference in the transfer comment", "ნაბიჯი 2: გადარიცხვის კომენტარში ჩაწერეთ ზუსტად ეს ფლიტის კოდი")}</div>
-              <div className="txSub mappingCode">{instructions.reference_code}</div>
-              <div className="txSub">{pick("Without this code, the transfer may wait in manual review before your reserve is credited.", "ამ კოდის გარეშე გადარიცხვა შეიძლება ხელით განხილვაში დარჩეს, სანამ რეზერვზე ჩაირიცხება.")}</div>
-            </div>
-            <button className="btn btnSoft" type="button" onClick={() => void copyValue(instructions.reference_code)}>
-              {pick("Copy", "კოპირება")}
-            </button>
-          </div>
-
-          <div className="txRow" role="listitem">
-            <div className="txMain">
-              <div className="txTitle">{pick("Step 3: Wait for BoG sync and matching", "ნაბიჯი 3: დაელოდეთ BoG-ის სინქსა და დამთხვევას")}</div>
+          <div className="reserveStep reserveStepImportant" role="listitem">
+            <div className="reserveStepNumber">2</div>
+            <div className="reserveStepBody">
+              <div className="txTitle">{pick("Write this code in the transfer comment", "გადარიცხვის კომენტარში ჩაწერეთ ეს კოდი")}</div>
+              <div className="reserveCopyBox reserveCodeBox">
+                <span className="mappingCode">{instructions.reference_code}</span>
+                <button className="btn btnSoft" type="button" onClick={() => void copyValue(instructions.reference_code)}>
+                  {pick("Copy", "კოპირება")}
+                </button>
+              </div>
               <div className="txSub">
-                {pick("Your fleet reserve updates after ExpertPay syncs incoming BoG activity and matches the transfer to this reference.", "ფლიტის რეზერვი განახლდება მას შემდეგ, რაც ExpertPay შემოსულ BoG აქტივობას სინქავს და ამ კოდს გადარიცხვას მიაბამს.")}
+                {pick(
+                  "This is how we know the money belongs to your fleet.",
+                  "ამით ვხვდებით, რომ თანხა თქვენს ფლიტს ეკუთვნის."
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="reserveStep" role="listitem">
+            <div className="reserveStepNumber">3</div>
+            <div className="reserveStepBody">
+              <div className="txTitle">{pick("You are done", "მზად არის")}</div>
+              <div className="txSub">
+                {pick(
+                  "Your reserve updates after the transfer arrives. If the code is missing, our team can still review it manually.",
+                  "რეზერვი განახლდება თანხის მიღების შემდეგ. თუ კოდი გამოგრჩათ, ჩვენი გუნდი მაინც შეძლებს ხელით შემოწმებას."
+                )}
               </div>
             </div>
           </div>
@@ -158,7 +131,7 @@ export default function DepositsPage() {
       ) : null}
 
       <h2 className="h2" style={{ marginTop: "22px", marginBottom: "10px" }}>
-        {pick("Recent deposits", "ბოლო შევსებები")}
+        {pick("Recent reserve top-ups", "ბოლო რეზერვის შევსებები")}
       </h2>
       <div className="txList" role="list">
         {deposits.length ? (
@@ -178,8 +151,8 @@ export default function DepositsPage() {
         ) : (
           <div className="txRow" role="listitem">
             <div className="txMain">
-              <div className="txTitle">{pick("No deposits yet", "შევსებები ჯერ არ არის")}</div>
-              <div className="txSub">{pick("Matched bank transfers will appear here once your fleet reserve is credited.", "დამთხვევილი საბანკო გადარიცხვები აქ გამოჩნდება, როცა ფლიტის რეზერვზე ჩაირიცხება.")}</div>
+              <div className="txTitle">{loading ? pick("Loading...", "იტვირთება...") : pick("No top-ups yet", "შევსებები ჯერ არ არის")}</div>
+              <div className="txSub">{pick("Reserve top-ups will appear here after money is added to your fleet.", "რეზერვის შევსებები აქ გამოჩნდება, როცა თანხა თქვენს ფლიტს დაემატება.")}</div>
             </div>
           </div>
         )}
