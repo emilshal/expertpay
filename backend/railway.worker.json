@@ -1,0 +1,6 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "deploy": {
+    "startCommand": "sh -c 'while true; do python manage.py import_yandex_driver_balance \"New Taxi\" 577775892 || true; sleep 10; done'"
+  }
+}
