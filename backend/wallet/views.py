@@ -889,6 +889,13 @@ class OwnerDriverFinanceListView(APIView):
                     "available_balance": get_account_balance(driver_account, "GEL"),
                     "currency": "GEL",
                     "created_at": item.created_at,
+                    "yandex_external_driver_id": external_driver_id,
+                    "yandex_display_name": membership.yandex_display_name if membership else "",
+                    "yandex_phone_number": membership.yandex_phone_number if membership else "",
+                    "yandex_current_balance": membership.yandex_current_balance if membership else Decimal("0.00"),
+                    "yandex_balance_currency": membership.yandex_balance_currency if membership else "GEL",
+                    "last_yandex_sync_at": membership.last_yandex_sync_at if membership else None,
+                    "sync_status": "synced" if external_driver_id else "needs_mapping",
                 }
             )
 

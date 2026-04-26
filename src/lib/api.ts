@@ -325,6 +325,13 @@ export type OwnerDriverFinanceRow = {
   available_balance: string;
   currency: string;
   created_at: string;
+  yandex_external_driver_id?: string;
+  yandex_display_name?: string;
+  yandex_phone_number?: string;
+  yandex_current_balance?: string;
+  yandex_balance_currency?: string;
+  last_yandex_sync_at?: string | null;
+  sync_status?: "synced" | "needs_mapping";
 };
 
 export type OwnerTransactionRow = {

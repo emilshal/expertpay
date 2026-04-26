@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   adminNetworkSummary,
@@ -82,69 +82,26 @@ function formatTimeOnly(value: string, locale: string) {
   }).format(date);
 }
 
+function formatSyncTime(value: string | null | undefined, locale: string, pick: (english: string, georgian: string) => string) {
+  if (!value) return pick("Not synced yet", "ჯერ არ დასინქებულა");
+  return formatDateTime(value, locale);
+}
+
+function driverFullName(row: OwnerDriverFinanceRow) {
+  return [row.first_name, row.last_name].filter(Boolean).join(" ").trim() || row.yandex_display_name || row.phone_number;
+}
+
+function transactionTypeLabel(value: string, pick: (english: string, georgian: string) => string) {
+  if (value === "Deposit") return pick("Deposit", "შევსება");
+  if (value === "Withdrawal") return pick("Withdrawal", "გატანა");
+  return value;
+}
+
 function toDateInputValue(value: Date) {
   const year = value.getFullYear();
   const month = String(value.getMonth() + 1).padStart(2, "0");
   const day = String(value.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
-}
-
-function MenuGlyph() {
-  return (
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="M4 7h16M4 12h16M4 17h16" />
-    </svg>
-  );
-}
-
-function TeamGlyph() {
-  return (
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="M16 19a4 4 0 0 0-8 0" />
-      <circle cx="12" cy="9" r="3.25" />
-      <path d="M21 18a3.25 3.25 0 0 0-3-3.22M6 14.78A3.25 3.25 0 0 0 3 18" />
-    </svg>
-  );
-}
-
-function WalletGlyph() {
-  return (
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h11A2.5 2.5 0 0 1 20 7.5v9A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5z" />
-      <path d="M4 9h16" />
-      <circle cx="15.5" cy="14" r="1.25" />
-    </svg>
-  );
-}
-
-function LoopGlyph() {
-  return (
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M7.5 8.5A5.5 5.5 0 0 1 17 10h2.5" />
-      <path d="M16.5 5.5 19.5 10l-4.5 3" />
-      <path d="M16.5 15.5A5.5 5.5 0 0 1 7 14H4.5" />
-      <path d="M7.5 18.5 4.5 14l4.5-3" />
-    </svg>
-  );
-}
-
-function StarGlyph() {
-  return (
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
-      <path d="m12 3.8 2.5 5.07 5.6.82-4.05 3.95.96 5.56L12 16.55 7 19.2l.99-5.56L3.95 9.7l5.57-.82z" />
-    </svg>
-  );
-}
-
-function SliderGlyph() {
-  return (
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="M4 6h7M14 6h6M4 12h12M19 12h1M4 18h3M10 18h10" />
-      <circle cx="11" cy="6" r="2" />
-      <circle cx="17" cy="12" r="2" />
-      <circle cx="8" cy="18" r="2" />
-    </svg>
-  );
 }
 
 function SearchGlyph() {
@@ -156,29 +113,11 @@ function SearchGlyph() {
   );
 }
 
-function RefreshGlyph() {
-  return (
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="M20 11a8 8 0 1 0 2.1 5.4" />
-      <path d="M20 4v7h-7" />
-    </svg>
-  );
-}
-
 function CopyGlyph() {
   return (
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8">
       <rect x="9" y="9" width="10" height="10" rx="2" />
       <path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" />
-    </svg>
-  );
-}
-
-function SettingsGlyph() {
-  return (
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="M12 8.5A3.5 3.5 0 1 0 12 15.5 3.5 3.5 0 0 0 12 8.5z" />
-      <path d="M19.4 15a1 1 0 0 0 .2 1.1l.04.04a1.8 1.8 0 0 1 0 2.55 1.8 1.8 0 0 1-2.55 0l-.04-.04a1 1 0 0 0-1.1-.2 1 1 0 0 0-.6.91V19.5A1.8 1.8 0 0 1 13.6 21h-3.2A1.8 1.8 0 0 1 8.6 19.5v-.08a1 1 0 0 0-.6-.91 1 1 0 0 0-1.1.2l-.04.04a1.8 1.8 0 0 1-2.55 0 1.8 1.8 0 0 1 0-2.55l.04-.04a1 1 0 0 0 .2-1.1 1 1 0 0 0-.91-.6H3.5A1.8 1.8 0 0 1 2 12.6v-1.2A1.8 1.8 0 0 1 3.5 9.6h.08a1 1 0 0 0 .91-.6 1 1 0 0 0-.2-1.1l-.04-.04a1.8 1.8 0 0 1 0-2.55 1.8 1.8 0 0 1 2.55 0l.04.04a1 1 0 0 0 1.1.2 1 1 0 0 0 .6-.91V4.5A1.8 1.8 0 0 1 10.4 3h3.2A1.8 1.8 0 0 1 15.4 4.5v.08a1 1 0 0 0 .6.91 1 1 0 0 0 1.1-.2l.04-.04a1.8 1.8 0 0 1 2.55 0 1.8 1.8 0 0 1 0 2.55l-.04.04a1 1 0 0 0-.2 1.1 1 1 0 0 0 .91.6h.08A1.8 1.8 0 0 1 22 11.4v1.2a1.8 1.8 0 0 1-1.5 1.8h-.08a1 1 0 0 0-.91.6z" />
     </svg>
   );
 }
@@ -281,10 +220,10 @@ export default function OwnerDashboardPage() {
   const [financeFromDate, setFinanceFromDate] = useState(toDateInputValue(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 30)));
   const [financeToDate, setFinanceToDate] = useState(toDateInputValue(today));
   const [copiedLink, setCopiedLink] = useState(false);
-  const [ownerRailOpen, setOwnerRailOpen] = useState(true);
-  const [ownerSection, setOwnerSection] = useState<"roster" | "transactions" | "wallet">("roster");
+  const [ownerSection, setOwnerSection] = useState<"overview" | "drivers" | "payouts">("overview");
   const [showWithdrawnBreakdown, setShowWithdrawnBreakdown] = useState(false);
   const [openPendingFleetId, setOpenPendingFleetId] = useState<number | null>(null);
+  const ownerContentRef = useRef<HTMLDivElement | null>(null);
 
   async function loadData() {
     setLoading(true);
@@ -358,25 +297,38 @@ export default function OwnerDashboardPage() {
 
   const filteredFinanceRows = useMemo(() => {
     const query = financeSearch.trim().toLowerCase();
-    const from = financeFromDate ? new Date(`${financeFromDate}T00:00:00`) : null;
-    const to = financeToDate ? new Date(`${financeToDate}T23:59:59`) : null;
 
     return driverFinanceRows.filter((row) => {
-      const createdAt = row.created_at ? new Date(row.created_at) : null;
-      if (from && createdAt && createdAt < from) return false;
-      if (to && createdAt && createdAt > to) return false;
       if (!query) return true;
       const haystack = [
         String(row.id),
         row.first_name,
         row.last_name,
-        row.phone_number
+        row.phone_number,
+        row.yandex_display_name ?? "",
+        row.yandex_phone_number ?? ""
       ]
         .join(" ")
         .toLowerCase();
       return haystack.includes(query);
     });
-  }, [driverFinanceRows, financeFromDate, financeSearch, financeToDate]);
+  }, [driverFinanceRows, financeSearch]);
+
+  const driverBalanceTotal = driverFinanceRows.reduce((total, row) => total + Number(row.available_balance || 0), 0);
+  const yandexBalanceTotal = driverFinanceRows.reduce((total, row) => total + Number(row.yandex_current_balance || 0), 0);
+  const syncedDriversCount = driverFinanceRows.filter((row) => row.sync_status === "synced" || row.yandex_external_driver_id).length;
+  const needsMappingCount = Math.max(driverFinanceRows.length - syncedDriversCount, 0);
+  const topDrivers = [...driverFinanceRows]
+    .sort((left, right) => Number(right.available_balance || 0) - Number(left.available_balance || 0))
+    .slice(0, 5);
+  const recentTransactions = ownerTransactions.slice(0, 5);
+  const recentPayouts = ownerTransactions
+    .filter((row) => row.transaction_type === "Withdrawal")
+    .slice(0, 8);
+  const latestSyncAt = driverFinanceRows
+    .map((row) => row.last_yandex_sync_at)
+    .filter((value): value is string => Boolean(value))
+    .sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0];
 
   async function handleCopyFleetLink() {
     if (!inviteLink || typeof navigator === "undefined" || !navigator.clipboard) return;
@@ -385,337 +337,281 @@ export default function OwnerDashboardPage() {
     window.setTimeout(() => setCopiedLink(false), 1800);
   }
 
+  function handleOwnerSectionChange(nextSection: "overview" | "drivers" | "payouts") {
+    setOwnerSection(nextSection);
+    window.setTimeout(() => {
+      ownerContentRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 60);
+  }
+
   if (isOwner) {
     return (
-      <div className="ownerDashboard ownerExecutiveDashboard">
-        <section className={`ownerRosterShell ${ownerRailOpen ? "" : "ownerRosterShellCollapsed"}`}>
-          <aside className={`ownerRosterRail ${ownerRailOpen ? "" : "ownerRosterRailCollapsed"}`}>
-            <div className="ownerRosterLogo">₾</div>
-            <nav className="ownerRosterRailNav" aria-label={pick("Owner sections", "მფლობელის სექციები")}>
-              <button
-                className={`ownerRosterRailLink ${ownerSection === "roster" ? "ownerRosterRailLinkActive" : ""}`}
-                type="button"
-                aria-label={pick("Driver list", "მძღოლების სია")}
-                onClick={() => setOwnerSection("roster")}
-              >
-                <TeamGlyph />
-              </button>
-              <button
-                className={`ownerRosterRailLink ${ownerSection === "transactions" ? "ownerRosterRailLinkActive" : ""}`}
-                type="button"
-                aria-label={pick("Fleet transactions", "ფლიტის ტრანზაქციები")}
-                onClick={() => setOwnerSection("transactions")}
-              >
-                <LoopGlyph />
-              </button>
-              <button
-                className={`ownerRosterRailLink ${ownerSection === "wallet" ? "ownerRosterRailLinkActive" : ""}`}
-                type="button"
-                aria-label={pick("Driver balances", "მძღოლების ბალანსები")}
-                onClick={() => setOwnerSection("wallet")}
-              >
-                <WalletGlyph />
-              </button>
-              <Link className="ownerRosterRailLink" to="/payouts" aria-label={pick("Payouts", "გატანები")}>
-                <StarGlyph />
-              </Link>
-              <Link className="ownerRosterRailLink" to="/settings" aria-label={pick("Tools", "ინსტრუმენტები")}>
-                <SliderGlyph />
-              </Link>
-            </nav>
-          </aside>
-
-          <div className="ownerRosterMain">
-            <div className="ownerRosterTopline">
-              <button
-                className="ownerRosterUtilityButton"
-                type="button"
-                aria-label={pick("Owner menu", "მფლობელის მენიუ")}
-                aria-expanded={ownerRailOpen}
-                onClick={() => setOwnerRailOpen((current) => !current)}
-              >
-                <MenuGlyph />
-              </button>
-              <div className="ownerRosterMetricChip">
-                <StarGlyph />
-                <span>{pick("Owner", "მფლობელი")}</span>
-              </div>
-              <div className="ownerRosterReserveChip">
-                <span className="ownerRosterReserveIcon">₾</span>
-                <span>{formatMoney(summary?.reserve_balance ?? "0.00", currency)}</span>
-              </div>
-              <Link className="ownerRosterUtilityButton" to="/settings" aria-label={pick("Open settings", "პარამეტრების გახსნა")}>
-                <SettingsGlyph />
-              </Link>
+      <div className="ownerDashboard ownerExecutiveDashboard ownerControlPage">
+            <div className="driverInstallAction">
+              <InstallAppGuide variant="icon" />
             </div>
-
-            <div className="ownerRosterIntro">
-              <div className="ownerRosterSubtitle">{activeFleetName || pick("Active fleet", "აქტიური ფლიტი")}</div>
-              <div className="ownerRosterTitleRow">
-                <h1 className="ownerRosterTitle">
-                  {ownerSection === "wallet"
-                    ? pick("Driver balances", "მძღოლების ბალანსები")
-                    : ownerSection === "transactions"
-                      ? pick("Fleet transactions", "ფლიტის ტრანზაქციები")
-                      : pick("Driver roster", "მძღოლების სია")}
-                </h1>
-                <InstallAppGuide />
+            <section className="ownerControlHero">
+              <div className="ownerControlHeroCopy">
+                <div className="ownerRosterSubtitle">{pick("Fleet control room", "ფლიტის მართვის ოთახი")}</div>
+                <h1 className="ownerControlTitle">{activeFleetName || pick("Active fleet", "აქტიური ფლიტი")}</h1>
+                <div className="ownerControlHeroBadges">
+                  <span className="ownerSyncPill ownerSyncPillGood">
+                    {pick("Yandex", "Yandex")} · {formatSyncTime(latestSyncAt, locale, pick)}
+                  </span>
+                  <span className={`ownerSyncPill ${needsMappingCount ? "ownerSyncPillWarn" : "ownerSyncPillGood"}`}>
+                    {needsMappingCount
+                      ? pick(`${needsMappingCount} need mapping`, `${needsMappingCount} საჭიროებს მიბმას`)
+                      : pick("All drivers mapped", "ყველა მძღოლი მიბმულია")}
+                  </span>
+                </div>
               </div>
-            </div>
+            </section>
 
             {error ? <p className="statusError">{formatApiError(error)}</p> : null}
 
-            {ownerSection === "wallet" ? (
+            <section className="ownerControlStats" aria-label={pick("Fleet overview", "ფლიტის მიმოხილვა")}>
+              <article className="ownerControlStat ownerControlStatPrimary">
+                <span>{pick("Available to drivers", "მძღოლებისთვის ხელმისაწვდომი")}</span>
+                <strong>{formatMoney(String(driverBalanceTotal), currency)}</strong>
+                <small>{pick(`${driverFinanceRows.length} active drivers`, `${driverFinanceRows.length} აქტიური მძღოლი`)}</small>
+              </article>
+              <article className="ownerControlStat">
+                <span>{pick("Fleet reserve", "ფლიტის რეზერვი")}</span>
+                <strong>{formatMoney(summary?.reserve_balance ?? "0.00", currency)}</strong>
+                <small>{pick("Money currently funded in ExpertPay", "ExpertPay-ში მიმდინარე შევსებული თანხა")}</small>
+              </article>
+              <article className="ownerControlStat">
+                <span>{pick("Pending payouts", "მოლოდინში გატანები")}</span>
+                <strong>{formatMoney(summary?.pending_payouts_total ?? "0.00", currency)}</strong>
+                <small>{pick(`${summary?.pending_payouts_count ?? 0} requests`, `${summary?.pending_payouts_count ?? 0} მოთხოვნა`)}</small>
+              </article>
+              <article className="ownerControlStat">
+                <span>{pick("Yandex balance", "Yandex ბალანსი")}</span>
+                <strong>{formatMoney(String(yandexBalanceTotal), currency)}</strong>
+                <small>{pick(`${syncedDriversCount} synced drivers`, `${syncedDriversCount} დასინქებული მძღოლი`)}</small>
+              </article>
+            </section>
+
+            <nav className="ownerControlTabs" aria-label={pick("Owner dashboard sections", "მფლობელის დეშბორდის სექციები")}>
+              <button className={`ownerControlTab ${ownerSection === "overview" ? "ownerControlTabActive" : ""}`} type="button" onClick={() => handleOwnerSectionChange("overview")}>
+                {pick("Overview", "მიმოხილვა")}
+              </button>
+              <button className={`ownerControlTab ${ownerSection === "drivers" ? "ownerControlTabActive" : ""}`} type="button" onClick={() => handleOwnerSectionChange("drivers")}>
+                {pick("Drivers", "მძღოლები")}
+              </button>
+              <button className={`ownerControlTab ${ownerSection === "payouts" ? "ownerControlTabActive" : ""}`} type="button" onClick={() => handleOwnerSectionChange("payouts")}>
+                {pick("Payouts", "გატანები")}
+              </button>
+            </nav>
+
+            <div ref={ownerContentRef} className="ownerSectionContent">
+            {ownerSection === "overview" ? (
+              <div className="ownerControlGrid">
+                <section className="ownerControlPanel ownerAttentionPanel">
+                  <div className="ownerControlPanelHeader">
+                    <div>
+                      <h2>{pick("Needs attention", "საყურადღებო")}</h2>
+                      <p>{pick("The few things worth checking first.", "პირველ რიგში გადასამოწმებელი საკითხები.")}</p>
+                    </div>
+                    <button className="ownerTinyButton" type="button" onClick={() => void loadData()}>
+                      {pick("Refresh", "განახლება")}
+                    </button>
+                  </div>
+                  <div className="ownerAttentionList">
+                    {needsMappingCount ? (
+                      <Link className="ownerAttentionItem ownerAttentionWarn" to="/driver-mappings">
+                        <strong>{pick("Driver mapping needed", "მძღოლის მიბმა საჭიროა")}</strong>
+                        <span>{pick(`${needsMappingCount} drivers are not linked to Yandex yet.`, `${needsMappingCount} მძღოლი ჯერ არ არის მიბმული Yandex-ზე.`)}</span>
+                      </Link>
+                    ) : null}
+                    {alerts.length ? (
+                      alerts.slice(0, 3).map((alert) => (
+                        <Link key={alert.key} className={`ownerAttentionItem ownerAttention${alert.tone}`} to={alert.to}>
+                          <strong>{alert.title}</strong>
+                          <span>{alert.detail}</span>
+                        </Link>
+                      ))
+                    ) : !needsMappingCount ? (
+                      <div className="ownerAttentionItem ownerAttentionGood">
+                        <strong>{pick("Everything looks clean", "ყველაფერი წესრიგშია")}</strong>
+                        <span>{pick("No urgent fleet issues right now.", "ამ მომენტში სასწრაფო პრობლემა არ ჩანს.")}</span>
+                      </div>
+                    ) : null}
+                  </div>
+                </section>
+
+                <section className="ownerControlPanel">
+                  <div className="ownerControlPanelHeader">
+                    <div>
+                      <h2>{pick("Top driver balances", "ყველაზე მაღალი ბალანსები")}</h2>
+                      <p>{pick("Drivers most likely to request a payout next.", "მძღოლები, ვინც შესაძლოა შემდეგ მოითხოვონ გატანა.")}</p>
+                    </div>
+                    <button className="ownerTinyButton" type="button" onClick={() => handleOwnerSectionChange("drivers")}>
+                      {pick("View all", "ყველას ნახვა")}
+                    </button>
+                  </div>
+                  <div className="ownerMiniList">
+                    {topDrivers.length ? (
+                      topDrivers.map((row) => (
+                        <div key={row.id} className="ownerMiniRow">
+                          <div>
+                            <strong>{driverFullName(row)}</strong>
+                            <span>{row.phone_number}</span>
+                          </div>
+                          <b>{formatMoney(row.available_balance, row.currency)}</b>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="ownerEmptyState">{pick("No drivers yet.", "მძღოლები ჯერ არ არის.")}</div>
+                    )}
+                  </div>
+                </section>
+
+                <section className="ownerControlPanel ownerControlPanelWide">
+                  <div className="ownerControlPanelHeader">
+                    <div>
+                      <h2>{pick("Recent movement", "ბოლო მოძრაობა")}</h2>
+                      <p>{pick("Funding and payout activity for this fleet.", "ამ ფლიტის შევსებები და გატანები.")}</p>
+                    </div>
+                    <button className="ownerTinyButton" type="button" onClick={() => handleOwnerSectionChange("payouts")}>
+                      {pick("Details", "დეტალები")}
+                    </button>
+                  </div>
+                  <div className="ownerMovementList">
+                    {recentTransactions.length ? (
+                      recentTransactions.map((row) => (
+                        <div key={row.id} className="ownerMovementRow">
+                          <span className={row.transaction_type === "Deposit" ? "ownerMovementIcon ownerMovementIconDeposit" : "ownerMovementIcon"}>
+                            {row.transaction_type === "Deposit" ? "+" : "-"}
+                          </span>
+                          <div>
+                            <strong>{transactionTypeLabel(row.transaction_type, pick)}</strong>
+                            <span>{formatDateTime(row.created_at, locale)}</span>
+                          </div>
+                          <b>{formatMoney(row.amount, row.currency)}</b>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="ownerEmptyState">{pick("No fleet transactions yet.", "ფლიტის ტრანზაქციები ჯერ არ არის.")}</div>
+                    )}
+                  </div>
+                </section>
+              </div>
+            ) : ownerSection === "drivers" ? (
               <>
-                <div className="ownerRosterControls ownerFinanceControls">
-                  <div className="ownerRosterDateRow">
-                    <label className="ownerRosterField">
-                      <input
-                        className="ownerRosterInput"
-                        type="date"
-                        value={financeFromDate}
-                        onChange={(event) => setFinanceFromDate(event.target.value)}
-                      />
-                    </label>
-                    <label className="ownerRosterField">
-                      <input
-                        className="ownerRosterInput"
-                        type="date"
-                        value={financeToDate}
-                        onChange={(event) => setFinanceToDate(event.target.value)}
-                      />
-                    </label>
-                    <button className="ownerRosterActionButton" type="button" onClick={() => void loadData()} aria-label={pick("Refresh balances", "ბალანსების განახლება")}>
-                      <RefreshGlyph />
-                    </button>
-                  </div>
-
-                  <div className="ownerRosterSearchRow">
-                    <label className="ownerRosterField ownerRosterFieldGrow">
-                      <input
-                        className="ownerRosterInput"
-                        type="text"
-                        placeholder={pick("Search by id, name, or phone", "ძებნა ID-ით, სახელით ან ნომრით")}
-                        value={financeSearch}
-                        onChange={(event) => setFinanceSearch(event.target.value)}
-                      />
-                    </label>
-                    <button className="ownerRosterActionButton" type="button" onClick={() => void loadData()} aria-label={pick("Refresh finance table", "ფინანსური ცხრილის განახლება")}>
-                      <SearchGlyph />
-                    </button>
-                  </div>
-                </div>
-
-                <div className="ownerRosterSummaryRow">
-                  <div className="ownerRosterSummaryChip">
-                    <span className="ownerRosterSummaryLabel">{pick("Visible balance", "ნაჩვენები ბალანსი")}</span>
-                    <span className="ownerRosterSummaryValue">
-                      {formatMoney(
-                        String(
-                          filteredFinanceRows.reduce(
-                            (total, row) => total + Number(row.available_balance || 0),
-                            0
-                          )
-                        ),
-                        currency
-                      )}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="ownerFinanceTableWrap">
-                  <table className="ownerFinanceTable">
-                    <thead>
-                      <tr>
-                        <th>ID</th>
-                        <th>{pick("First name", "სახელი")}</th>
-                        <th>{pick("Last name", "გვარი")}</th>
-                        <th>{pick("Transactions", "ტრანზაქციები")}</th>
-                        <th>{pick("Balance", "ბალანსი")}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredFinanceRows.length ? (
-                        filteredFinanceRows.map((row) => (
-                          <tr key={row.id}>
-                            <td>{row.id}</td>
-                            <td>
-                              <div>{row.first_name || "—"}</div>
-                              <div className="ownerRosterMemberMeta">{row.phone_number}</div>
-                            </td>
-                            <td>{row.last_name || "—"}</td>
-                            <td>{row.transaction_count}</td>
-                            <td>{formatMoney(row.available_balance, row.currency)}</td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td className="ownerFinanceEmptyCell" colSpan={5}>
-                            {pick("No drivers match these filters right now.", "ამ ფილტრებით მძღოლები ახლა ვერ მოიძებნა.")}
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            ) : ownerSection === "transactions" ? (
-              <>
-                <div className="ownerRosterControls ownerFinanceControls">
-                  <div className="ownerRosterDateRow">
-                    <button className="ownerRosterActionButton" type="button" onClick={() => void loadData()} aria-label={pick("Refresh transactions", "ტრანზაქციების განახლება")}>
-                      <RefreshGlyph />
-                    </button>
-                  </div>
-                </div>
-
-                <div className="ownerFinanceTableWrap">
-                  <table className="ownerFinanceTable">
-                    <thead>
-                      <tr>
-                        <th>ID</th>
-                        <th>{pick("Transaction type", "ტრანზაქციის ტიპი")}</th>
-                        <th>{pick("Amount", "თანხა")}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {ownerTransactions.length ? (
-                        ownerTransactions.map((row) => (
-                          <tr key={row.id}>
-                            <td>{row.id}</td>
-                            <td>{pick(row.transaction_type, row.transaction_type === "Deposit" ? "შევსება" : "გატანა")}</td>
-                            <td>{formatMoney(row.amount, row.currency)}</td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td className="ownerFinanceEmptyCell" colSpan={3}>
-                            {pick("No transactions yet for this fleet.", "ამ ფლიტისთვის ტრანზაქციები ჯერ არ არის.")}
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="ownerRosterControls">
-                  <div className="ownerRosterDateRow">
-                    <label className="ownerRosterField">
-                      <input
-                        className="ownerRosterInput"
-                        type="date"
-                        value={fromDate}
-                        onChange={(event) => setFromDate(event.target.value)}
-                      />
-                    </label>
-                    <label className="ownerRosterField">
-                      <input
-                        className="ownerRosterInput"
-                        type="date"
-                        value={toDate}
-                        onChange={(event) => setToDate(event.target.value)}
-                      />
-                    </label>
-                    <button className="ownerRosterActionButton" type="button" onClick={() => void loadData()} aria-label={pick("Refresh owner panel", "მფლობელის პანელის განახლება")}>
-                      <RefreshGlyph />
-                    </button>
-                  </div>
-
-                  <div className="ownerRosterSearchRow">
-                    <label className="ownerRosterField ownerRosterFieldGrow">
-                      <input
-                        className="ownerRosterInput"
-                        type="text"
-                        placeholder={pick("Search by id, name, or phone", "ძებნა ID-ით, სახელით ან ნომრით")}
-                        value={memberSearch}
-                        onChange={(event) => setMemberSearch(event.target.value)}
-                      />
-                    </label>
-                    <button className="ownerRosterActionButton" type="button" onClick={() => void loadData()} aria-label={pick("Refresh members", "მძღოლების განახლება")}>
-                      <SearchGlyph />
-                    </button>
-                  </div>
-
-                  <div className="ownerRosterLinkRow">
-                    <div className="ownerRosterLinkField">
+                <section className="ownerControlPanel">
+                  <div className="ownerControlPanelHeader ownerDriversHeader">
+                    <div>
+                      <h2>{pick("Drivers", "მძღოლები")}</h2>
+                      <p>{pick("Search, compare Yandex balance, and see what is available in ExpertPay.", "მოძებნეთ, შეადარეთ Yandex ბალანსი და ნახეთ ExpertPay-ში ხელმისაწვდომი თანხა.")}</p>
+                    </div>
+                    <div className="ownerInviteCopy">
                       <input className="ownerRosterInput ownerRosterInputLink" type="text" readOnly value={inviteLink} />
                       <button className="ownerRosterCopyButton" type="button" onClick={() => void handleCopyFleetLink()} aria-label={pick("Copy fleet link", "ფლიტის ლინკის დაკოპირება")}>
                         <CopyGlyph />
                       </button>
+                      {copiedLink ? <span>{pick("Copied", "დაკოპირდა")}</span> : null}
                     </div>
-                    {copiedLink ? <div className="ownerRosterCopied">{pick("Copied", "დაკოპირდა")}</div> : null}
                   </div>
+                  <div className="ownerRosterSearchRow ownerControlSearchRow">
+                    <label className="ownerRosterField ownerRosterFieldGrow">
+                      <input
+                        className="ownerRosterInput"
+                        type="text"
+                        placeholder={pick("Search by name, phone, or Yandex name", "ძებნა სახელით, ნომრით ან Yandex სახელით")}
+                        value={financeSearch}
+                        onChange={(event) => setFinanceSearch(event.target.value)}
+                      />
+                    </label>
+                    <button className="ownerRosterActionButton" type="button" onClick={() => void loadData()} aria-label={pick("Refresh drivers", "მძღოლების განახლება")}>
+                      <SearchGlyph />
+                    </button>
+                  </div>
+                </section>
 
-                  <div className="ownerRosterSelectRow">
-                    <label className="ownerRosterField ownerRosterFieldGrow">
-                      <select
-                        className="ownerRosterSelect"
-                        value={roleFilter}
-                        onChange={(event) => setRoleFilter(event.target.value as "all" | FleetMember["role"])}
-                      >
-                        <option value="all">{pick("All roles", "ყველა როლი")}</option>
-                        <option value="driver">{pick("Driver", "მძღოლი")}</option>
-                        <option value="operator">{pick("Operator", "ოპერატორი")}</option>
-                        <option value="admin">{pick("Admin", "ადმინისტრატორი")}</option>
-                        <option value="owner">{pick("Owner", "მფლობელი")}</option>
-                      </select>
-                    </label>
-                    <label className="ownerRosterField ownerRosterFieldGrow">
-                      <select
-                        className="ownerRosterSelect"
-                        value={statusFilter}
-                        onChange={(event) => setStatusFilter(event.target.value as "all" | "active" | "inactive")}
-                      >
-                        <option value="all">{pick("All statuses", "ყველა სტატუსი")}</option>
-                        <option value="active">{pick("Active", "აქტიური")}</option>
-                        <option value="inactive">{pick("Inactive", "არააქტიური")}</option>
-                      </select>
-                    </label>
+                <section className="ownerDriverCards">
+                  {filteredFinanceRows.length ? (
+                    filteredFinanceRows.map((row) => {
+                      const isSynced = row.sync_status === "synced" || Boolean(row.yandex_external_driver_id);
+                      return (
+                        <article key={row.id} className="ownerDriverCard">
+                          <div className="ownerDriverCardTop">
+                            <div>
+                              <h3>{driverFullName(row)}</h3>
+                              <p>{row.phone_number}</p>
+                            </div>
+                            <span className={`ownerDriverSync ${isSynced ? "ownerDriverSyncGood" : "ownerDriverSyncWarn"}`}>
+                              {isSynced ? pick("Synced", "დასინქებულია") : pick("Needs mapping", "საჭიროებს მიბმას")}
+                            </span>
+                          </div>
+                          <div className="ownerDriverMoneyGrid">
+                            <div>
+                              <span>{pick("ExpertPay", "ExpertPay")}</span>
+                              <strong>{formatMoney(row.available_balance, row.currency)}</strong>
+                            </div>
+                            <div>
+                              <span>{pick("Yandex", "Yandex")}</span>
+                              <strong>{formatMoney(row.yandex_current_balance ?? "0.00", row.yandex_balance_currency ?? row.currency)}</strong>
+                            </div>
+                            <div>
+                              <span>{pick("Trips / rows", "ტრანზაქციები")}</span>
+                              <strong>{row.transaction_count}</strong>
+                            </div>
+                          </div>
+                          <div className="ownerDriverFooter">
+                            <span>{pick("Last sync", "ბოლო სინქი")}: {formatSyncTime(row.last_yandex_sync_at, locale, pick)}</span>
+                            {row.yandex_display_name ? <span>{row.yandex_display_name}</span> : null}
+                          </div>
+                        </article>
+                      );
+                    })
+                  ) : (
+                    <div className="ownerControlPanel ownerEmptyState">{pick("No drivers match that search.", "ამ ძიებით მძღოლები ვერ მოიძებნა.")}</div>
+                  )}
+                </section>
+              </>
+            ) : (
+              <section className="ownerControlPanel">
+                <div className="ownerControlPanelHeader">
+                  <div>
+                    <h2>{pick("Payouts", "გატანები")}</h2>
+                    <p>{pick("Track withdrawal requests and recent fleet movement.", "ნახეთ გატანის მოთხოვნები და ფლიტის ბოლო მოძრაობა.")}</p>
                   </div>
+                  <Link className="ownerTinyButton" to="/payouts">
+                    {pick("Open bank queue", "ბანკის რიგის გახსნა")}
+                  </Link>
                 </div>
 
-                <div className="ownerRosterTable" role="table" aria-label={pick("Fleet members", "ფლიტის წევრები")}>
-                  <div className="ownerRosterTableHeader" role="row">
-                    <div className="ownerRosterCell ownerRosterCellId" role="columnheader">ID</div>
-                    <div className="ownerRosterCell" role="columnheader">{pick("First name", "სახელი")}</div>
-                    <div className="ownerRosterCell" role="columnheader">{pick("Last name", "გვარი")}</div>
-                  </div>
-
-                  {filteredMembers.length ? (
-                    filteredMembers.map((member) => (
-                      <div key={member.id} className="ownerRosterTableRow" role="row">
-                        <div className="ownerRosterCell ownerRosterCellId" role="cell">{member.id}</div>
-                        <div className="ownerRosterCell" role="cell">
-                          <div>{member.first_name || member.username}</div>
-                          <div className="ownerRosterMemberMeta">{member.phone_number}</div>
+                <div className="ownerPayoutCards">
+                  {summary?.pending_payouts.length ? (
+                    summary.pending_payouts.map((payout) => (
+                      <div key={payout.id} className="ownerPayoutCard">
+                        <span className="ownerPayoutIcon">⌛</span>
+                        <div>
+                          <strong>{payout.driver_name || pick("Driver payout", "მძღოლის გატანა")}</strong>
+                          <span>{pick("Waiting for bank/signing", "ელოდება ბანკს/ხელმოწერას")}</span>
                         </div>
-                        <div className="ownerRosterCell" role="cell">
-                          <div>{member.last_name || "—"}</div>
-                          <div className="ownerRosterMemberMeta">
-                            {pick(member.role, member.role === "driver" ? "მძღოლი" : member.role === "operator" ? "ოპერატორი" : member.role === "admin" ? "ადმინისტრატორი" : "მფლობელი")}
-                            {" · "}
-                            {member.is_active ? pick("active", "აქტიური") : pick("inactive", "არააქტიური")}
-                            {" · "}
-                            {formatDateOnly(member.created_at, locale)}
-                            {" · "}
-                            {formatTimeOnly(member.created_at, locale)}
-                          </div>
+                        <b>{formatMoney(payout.amount, payout.currency)}</b>
+                      </div>
+                    ))
+                  ) : recentPayouts.length ? (
+                    recentPayouts.map((row) => (
+                      <div key={row.id} className="ownerPayoutCard">
+                        <span className="ownerPayoutIcon ownerPayoutIconDone">✓</span>
+                        <div>
+                          <strong>{transactionTypeLabel(row.transaction_type, pick)}</strong>
+                          <span>{formatDateTime(row.created_at, locale)}</span>
                         </div>
+                        <b>{formatMoney(row.amount, row.currency)}</b>
                       </div>
                     ))
                   ) : (
-                    <div className="ownerRosterEmpty">
-                      <div className="ownerRosterEmptyTitle">{pick("No members match these filters", "ამ ფილტრებით წევრები ვერ მოიძებნა")}</div>
-                      <div className="ownerRosterEmptyText">{pick("Try widening the date range or clearing the search to see more drivers and operators.", "იხილეთ მეტი მძღოლი და ოპერატორი თარიღების გაფართოებით ან ძიების გაწმენდით.")}</div>
-                    </div>
+                    <div className="ownerEmptyState">{pick("No payout requests yet.", "გატანის მოთხოვნები ჯერ არ არის.")}</div>
                   )}
                 </div>
-              </>
+              </section>
             )}
-          </div>
-        </section>
+            </div>
       </div>
     );
   }

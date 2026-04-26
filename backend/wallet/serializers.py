@@ -75,6 +75,13 @@ class OwnerDriverFinanceSerializer(serializers.Serializer):
     available_balance = serializers.DecimalField(max_digits=14, decimal_places=2)
     currency = serializers.CharField(max_length=3)
     created_at = serializers.DateTimeField()
+    yandex_external_driver_id = serializers.CharField(allow_blank=True, required=False)
+    yandex_display_name = serializers.CharField(allow_blank=True, required=False)
+    yandex_phone_number = serializers.CharField(allow_blank=True, required=False)
+    yandex_current_balance = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
+    yandex_balance_currency = serializers.CharField(max_length=3, required=False)
+    last_yandex_sync_at = serializers.DateTimeField(allow_null=True, required=False)
+    sync_status = serializers.CharField(required=False)
 
 
 class OwnerTransactionSerializer(serializers.Serializer):
