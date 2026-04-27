@@ -1172,6 +1172,42 @@ class DriverWithdrawalApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("beneficiary ID number", response.data["detail"])
 
+    @patch("wallet.views.submit_withdrawal_to_bog")
+    def test_withdrawal_reverses_local_hold_when_bog_document_creation_fails(self, mocked_bog_submit):
+        mocked_bog_submit.side_effect = ValueError("Bank account is missing beneficiary ID number.")
+        ProviderConnection.objects.create(
+            user=self.owner,
+            fleet=self.fleet,
+            provider=ProviderConnection.Provider.BANK_OF_GEORGIA,
+            external_account_id="bog-failing-doc-test",
+            status="active",
+            config={},
+        )
+        self._fund_accounts(reserve_amount="100.00", available_amount="100.00")
+
+        response = self.client.post(
+            reverse("withdrawal-create"),
+            data={"bank_account_id": self.driver_bank_account.id, "amount": "10.00"},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+            HTTP_IDEMPOTENCY_KEY="driver-withdrawal-bog-failure",
+            HTTP_X_REQUEST_ID="req-driver-withdrawal-bog-failure",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        withdrawal = WithdrawalRequest.objects.get(id=response.data["id"])
+        self.assertEqual(withdrawal.status, WithdrawalRequest.Status.FAILED)
+        driver_account = LedgerAccount.objects.get(
+            user=self.driver,
+            account_type=LedgerAccount.AccountType.DRIVER_AVAILABLE,
+        )
+        reserve_account = LedgerAccount.objects.get(
+            fleet=self.fleet,
+            account_type=LedgerAccount.AccountType.FLEET_RESERVE,
+        )
+        self.assertEqual(get_account_balance(driver_account), Decimal("100.00"))
+        self.assertEqual(get_account_balance(reserve_account), Decimal("100.00"))
+
     def test_duplicate_withdrawal_returns_existing_request_without_second_debit(self):
         self._fund_accounts(reserve_amount="100.00", available_amount="100.00")
 

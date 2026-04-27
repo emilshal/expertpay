@@ -2,7 +2,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from accounts.models import Fleet, FleetPhoneBinding
 from integrations.models import ProviderConnection
-from integrations.services import submit_withdrawal_to_bog
+from integrations.services import _reverse_withdrawal_to_wallet, submit_withdrawal_to_bog
 from wallet.models import WithdrawalRequest
 
 
@@ -80,6 +80,12 @@ class Command(BaseCommand):
             except Exception as exc:
                 error_count += 1
                 errors.append(f"withdrawal={withdrawal.id}: {exc}")
+                _reverse_withdrawal_to_wallet(
+                    withdrawal=withdrawal,
+                    reason=f"BoG payout document was not created: {exc}",
+                    idempotency_key=f"bog:worker-submit:reversal:{withdrawal.id}",
+                    created_by=connection.user,
+                )
 
         self.stdout.write(
             self.style.SUCCESS(
