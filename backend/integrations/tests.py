@@ -2873,6 +2873,7 @@ class FleetScopedBogPayoutApiTests(APITestCase):
 
     @patch("integrations.services._bog_request")
     @patch("integrations.services._bog_missing_payout_env_vars")
+    @override_settings(WITHDRAWAL_REQUEST_COOLDOWN_SECONDS=0)
     def test_operator_can_submit_driver_created_withdrawal_in_same_fleet(self, mocked_missing, mocked_request):
         mocked_missing.return_value = []
         mocked_request.return_value = {
@@ -2910,6 +2911,11 @@ class FleetScopedBogPayoutApiTests(APITestCase):
         )
         self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
         created_withdrawal_id = create_response.data["id"]
+        auto_payout = BogPayout.objects.get(withdrawal_id=created_withdrawal_id)
+        self.assertEqual(auto_payout.connection_id, self.owner_connection.id)
+        self.assertEqual(auto_payout.provider_unique_key, 777119)
+        created_withdrawal = WithdrawalRequest.objects.get(id=created_withdrawal_id)
+        self.assertEqual(created_withdrawal.status, WithdrawalRequest.Status.PROCESSING)
 
         self.client.force_authenticate(self.operator)
         list_response = self.client.get(reverse("withdrawal-list"), HTTP_X_FLEET_NAME=self.fleet.name)
@@ -2923,12 +2929,10 @@ class FleetScopedBogPayoutApiTests(APITestCase):
             HTTP_X_FLEET_NAME=self.fleet.name,
         )
 
-        self.assertEqual(submit_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(submit_response.status_code, status.HTTP_200_OK)
         self.assertEqual(submit_response.data["status"], "processing")
         payout = BogPayout.objects.get(id=submit_response.data["id"])
         self.assertEqual(payout.connection_id, self.owner_connection.id)
-        created_withdrawal = WithdrawalRequest.objects.get(id=created_withdrawal_id)
-        self.assertEqual(created_withdrawal.status, WithdrawalRequest.Status.PROCESSING)
 
     @patch("integrations.services._bog_request")
     @patch("integrations.services._bog_missing_payout_env_vars")
