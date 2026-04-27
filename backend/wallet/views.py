@@ -26,7 +26,7 @@ from ledger.services import (
 )
 from payments.models import InternalTransfer
 from integrations.models import ProviderConnection, YandexTransactionRecord
-from integrations.services import submit_withdrawal_to_bog, submit_yandex_withdrawal_transaction, sync_bog_deposits
+from integrations.services import submit_withdrawal_to_bog, sync_bog_deposits
 from .models import BankAccount, Deposit, FleetRatingPenalty, IncomingBankTransfer, Wallet, WithdrawalRequest
 from .serializers import (
     AdminNetworkSummarySerializer,
@@ -494,32 +494,6 @@ class WithdrawalCreateView(APIView):
             if connection is not None:
                 try:
                     submit_withdrawal_to_bog(connection=connection, withdrawal=withdrawal)
-                    yandex_result = submit_yandex_withdrawal_transaction(withdrawal=withdrawal)
-                    if yandex_result.get("ok"):
-                        log_audit(
-                            user=request.user,
-                            action="withdrawal_yandex_transaction_submitted",
-                            resource_type="withdrawal",
-                            resource_id=withdrawal.id,
-                            request_id=request_id,
-                            ip_address=request.META.get("REMOTE_ADDR"),
-                            metadata=yandex_result,
-                        )
-                    elif not yandex_result.get("skipped"):
-                        logger.warning(
-                            "Yandex withdrawal transaction failed for withdrawal %s: %s",
-                            withdrawal.id,
-                            yandex_result,
-                        )
-                        log_audit(
-                            user=request.user,
-                            action="withdrawal_yandex_transaction_failed",
-                            resource_type="withdrawal",
-                            resource_id=withdrawal.id,
-                            request_id=request_id,
-                            ip_address=request.META.get("REMOTE_ADDR"),
-                            metadata=yandex_result,
-                        )
                 except Exception as exc:
                     logger.exception("Automatic BoG payout submission failed for withdrawal %s", withdrawal.id)
                     log_audit(

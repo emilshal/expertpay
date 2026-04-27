@@ -2496,7 +2496,7 @@ class BogPayoutApiTests(APITestCase):
             HTTP_X_FLEET_NAME=self.fleet.name,
         )
 
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["status"], "processing")
         self.assertEqual(response.data["provider_unique_key"], 345678)
         withdrawal.refresh_from_db()
@@ -2542,9 +2542,15 @@ class BogPayoutApiTests(APITestCase):
         self.assertEqual(otp_call.kwargs["endpoint"], "/otp/request")
         self.assertEqual(otp_call.kwargs["body"], {"ObjectKey": 555001, "ObjectType": 0})
 
+    @patch("integrations.services._yandex_request")
     @patch("integrations.services._bog_request")
     @patch("integrations.services._bog_missing_payout_env_vars")
-    def test_sign_bog_payout_endpoint_completes_withdrawal(self, mocked_missing, mocked_request):
+    def test_sign_bog_payout_endpoint_completes_withdrawal(
+        self,
+        mocked_missing,
+        mocked_request,
+        mocked_yandex_request,
+    ):
         mocked_missing.return_value = []
         mocked_request.side_effect = [
             {
@@ -2563,6 +2569,20 @@ class BogPayoutApiTests(APITestCase):
                 "body": {"Status": "P", "ResultCode": None, "Match": 100},
             },
         ]
+        mocked_yandex_request.return_value = {
+            "ok": True,
+            "http_status": 200,
+            "body": {"transaction_id": "yandex-settled-withdrawal"},
+            "attempts": 1,
+        }
+        ProviderConnection.objects.create(
+            user=self.user,
+            fleet=self.fleet,
+            provider=ProviderConnection.Provider.YANDEX,
+            external_account_id="bog-settled-yandex",
+            status="active",
+            config={"park_id": "park-bog-settled", "client_id": "client", "api_key": "key"},
+        )
 
         withdrawal = self._create_withdrawal()
         submit_response = self.client.post(
@@ -2588,10 +2608,20 @@ class BogPayoutApiTests(APITestCase):
         self.assertEqual(sign_call.kwargs["body"], {"Otp": "123456", "ObjectKey": 555002})
         withdrawal.refresh_from_db()
         self.assertEqual(withdrawal.status, WithdrawalRequest.Status.COMPLETED)
+        mocked_yandex_request.assert_called_once()
+        yandex_call = mocked_yandex_request.call_args.kwargs
+        self.assertEqual(yandex_call["endpoint"], "/v3/parks/driver-profiles/transactions")
+        self.assertEqual(yandex_call["body"]["amount"], "-25.0000")
+        self.assertEqual(yandex_call["body"]["condition"]["balance_min"], "25.5000")
+        self.assertEqual(
+            yandex_call["extra_headers"]["X-Idempotency-Token"],
+            f"expertpay-withdrawal-{withdrawal.id}",
+        )
 
+    @patch("integrations.services._yandex_request")
     @patch("integrations.services._bog_request")
     @patch("integrations.services._bog_missing_payout_env_vars")
-    def test_failed_bog_status_reverses_wallet_balance(self, mocked_missing, mocked_request):
+    def test_failed_bog_status_reverses_wallet_balance(self, mocked_missing, mocked_request, mocked_yandex_request):
         mocked_missing.return_value = []
         mocked_request.side_effect = [
             {
@@ -2630,6 +2660,7 @@ class BogPayoutApiTests(APITestCase):
         fleet_reserve_account = get_or_create_fleet_reserve_account(self.fleet, currency="GEL")
         self.assertEqual(get_account_balance(driver_account), Decimal("150.00"))
         self.assertEqual(get_account_balance(fleet_reserve_account), Decimal("200.00"))
+        mocked_yandex_request.assert_not_called()
 
     @patch("integrations.services._bog_request")
     @patch("integrations.services._bog_missing_payout_env_vars")

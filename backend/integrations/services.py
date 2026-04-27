@@ -2513,7 +2513,8 @@ def _map_bog_status(provider_status: str):
 
 def _normalize_bog_payout_response_payload(payload):
     if isinstance(payload, dict) and any(
-        key in payload for key in ("submission", "latest_status", "otp_requests", "sign_attempts", "fee_transfer")
+        key in payload
+        for key in ("submission", "latest_status", "otp_requests", "sign_attempts", "fee_transfer", "yandex_withdrawal")
     ):
         return {
             "submission": payload.get("submission") or {},
@@ -2521,6 +2522,7 @@ def _normalize_bog_payout_response_payload(payload):
             "otp_requests": list(payload.get("otp_requests") or []),
             "sign_attempts": list(payload.get("sign_attempts") or []),
             "fee_transfer": payload.get("fee_transfer") or {},
+            "yandex_withdrawal": payload.get("yandex_withdrawal") or {},
         }
     latest_status = payload if isinstance(payload, dict) else {}
     return {
@@ -2529,6 +2531,7 @@ def _normalize_bog_payout_response_payload(payload):
         "otp_requests": [],
         "sign_attempts": [],
         "fee_transfer": {},
+        "yandex_withdrawal": {},
     }
 
 
@@ -2622,6 +2625,24 @@ def sign_bog_payout_document(*, payout: BogPayout, otp: str):
     return sync_bog_payout_status(payout=payout)
 
 
+def _submit_yandex_withdrawal_after_bog_settlement(*, payout_id: int):
+    payout = BogPayout.objects.select_related("withdrawal", "connection").get(id=payout_id)
+    withdrawal = payout.withdrawal
+    if payout.status != BogPayout.Status.SETTLED or withdrawal.status != WithdrawalRequest.Status.COMPLETED:
+        return payout
+
+    result = submit_yandex_withdrawal_transaction(withdrawal=withdrawal)
+    payload = _normalize_bog_payout_response_payload(payout.response_payload)
+    payload["yandex_withdrawal"] = {
+        **result,
+        "recorded_at": timezone.now().isoformat(),
+        "submitted_after_bog_status": payout.provider_status,
+    }
+    payout.response_payload = payload
+    payout.save(update_fields=["response_payload", "updated_at"])
+    return payout
+
+
 def sync_bog_payout_status(*, payout: BogPayout):
     if not payout.provider_unique_key:
         raise ValueError("BoG payout does not have a provider document key yet.")
@@ -2634,6 +2655,7 @@ def sync_bog_payout_status(*, payout: BogPayout):
     body = response.get("body") if isinstance(response.get("body"), dict) else {}
     provider_status = str(body.get("Status") or "")
     mapped_status = _map_bog_status(provider_status)
+    should_submit_yandex = False
 
     with transaction.atomic():
         locked_payout = BogPayout.objects.select_for_update().select_related(
@@ -2682,6 +2704,7 @@ def sync_bog_payout_status(*, payout: BogPayout):
 
         withdrawal = locked_payout.withdrawal
         if locked_payout.status == BogPayout.Status.SETTLED:
+            should_submit_yandex = bool(withdrawal.fleet_id)
             if withdrawal.status != WithdrawalRequest.Status.COMPLETED:
                 if withdrawal.fleet_id:
                     settle_driver_withdrawal(
@@ -2704,7 +2727,12 @@ def sync_bog_payout_status(*, payout: BogPayout):
                 withdrawal.status = WithdrawalRequest.Status.PROCESSING
                 withdrawal.save(update_fields=["status"])
 
-        return locked_payout
+        locked_payout_id = locked_payout.id
+
+    if should_submit_yandex:
+        return _submit_yandex_withdrawal_after_bog_settlement(payout_id=locked_payout_id)
+
+    return BogPayout.objects.get(id=locked_payout_id)
 
 
 def sync_open_bog_payouts(*, connection: ProviderConnection):

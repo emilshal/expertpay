@@ -7,7 +7,7 @@ from wallet.models import WithdrawalRequest
 
 
 class Command(BaseCommand):
-    help = "Submit missing withdrawal debit transactions to Yandex."
+    help = "Submit missing Yandex debit transactions for completed BoG withdrawals."
 
     def add_arguments(self, parser):
         parser.add_argument("--fleet-name", default="", help="Optional fleet name scope.")
@@ -24,10 +24,7 @@ class Command(BaseCommand):
         withdrawals = WithdrawalRequest.objects.filter(
             fleet__isnull=False,
             bog_payout__provider_unique_key__isnull=False,
-            status__in=[
-                WithdrawalRequest.Status.PROCESSING,
-                WithdrawalRequest.Status.COMPLETED,
-            ],
+            status=WithdrawalRequest.Status.COMPLETED,
         ).select_related("fleet", "user", "bank_account")
         if fleet is not None:
             withdrawals = withdrawals.filter(fleet=fleet)

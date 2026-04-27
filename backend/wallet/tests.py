@@ -998,19 +998,13 @@ class DriverWithdrawalApiTests(APITestCase):
         self.assertEqual(get_account_balance(payout_clearing), Decimal("30.00"))
         self.assertEqual(get_account_balance(fee_account), Decimal("0.50"))
 
-    @patch("wallet.views.submit_withdrawal_to_bog")
     @patch("integrations.services._yandex_request")
-    def test_withdrawal_posts_yandex_payout_transaction_when_connection_exists(
+    @patch("wallet.views.submit_withdrawal_to_bog")
+    def test_withdrawal_does_not_post_yandex_until_bog_settles(
         self,
-        mocked_yandex_request,
         mocked_bog_submit,
+        mocked_yandex_request,
     ):
-        mocked_yandex_request.return_value = {
-            "ok": True,
-            "http_status": 200,
-            "body": {"transaction_id": "yandex-withdrawal-1"},
-            "attempts": 1,
-        }
         mocked_bog_submit.return_value = (None, True)
         ProviderConnection.objects.create(
             user=self.owner,
@@ -1044,23 +1038,11 @@ class DriverWithdrawalApiTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        body = mocked_yandex_request.call_args.kwargs["body"]
-        self.assertEqual(mocked_yandex_request.call_args.kwargs["endpoint"], "/v3/parks/driver-profiles/transactions")
-        self.assertEqual(body["park_id"], "park-withdrawal-test")
-        self.assertEqual(body["contractor_profile_id"], "drv-withdraw-1")
-        self.assertEqual(body["amount"], "-30.0000")
-        self.assertEqual(body["condition"]["balance_min"], "30.5000")
-        self.assertEqual(body["data"]["kind"], "payout")
-        self.assertEqual(body["data"]["fee_amount"], "-0.5000")
-        self.assertEqual(
-            mocked_yandex_request.call_args.kwargs["extra_headers"]["X-Idempotency-Token"],
-            f"expertpay-withdrawal-{response.data['id']}",
-        )
-        self.assertTrue(
+        mocked_yandex_request.assert_not_called()
+        self.assertFalse(
             ExternalEvent.objects.filter(
                 external_id=f"expertpay-withdrawal-{response.data['id']}",
                 event_type="withdrawal_payout",
-                processed=True,
             ).exists()
         )
 
