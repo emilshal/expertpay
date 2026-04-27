@@ -5,7 +5,12 @@ from django.db.models import Q
 from django.utils import timezone
 
 from .models import ProviderConnection
-from .services import live_sync_yandex_data, sync_bog_deposits, sync_open_bog_payouts
+from .services import (
+    build_bog_source_account_reconciliation,
+    live_sync_yandex_data,
+    sync_bog_deposits,
+    sync_open_bog_payouts,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -424,5 +429,97 @@ def run_bog_payout_status_sync_jobs(
         "checked_count": checked_count,
         "updated_count": updated_count,
         "payout_error_count": payout_error_count,
+        "results": results,
+    }
+
+
+def run_bog_source_reconciliation_jobs(
+    *,
+    user_id=None,
+    fleet_name=None,
+    connection_id=None,
+    active_only=True,
+    currency="GEL",
+):
+    checked_connections = 0
+    ok_connections = 0
+    mismatch_count = 0
+    error_count = 0
+    results = []
+
+    for connection in _filtered_connections(
+        provider=ProviderConnection.Provider.BANK_OF_GEORGIA,
+        user_id=user_id,
+        fleet_name=fleet_name,
+        connection_id=connection_id,
+        active_only=active_only,
+    ):
+        checked_connections += 1
+        try:
+            result = build_bog_source_account_reconciliation(connection=connection, currency=currency)
+            ok = bool(result.get("ok"))
+            if ok:
+                ok_connections += 1
+            else:
+                mismatch_count += 1
+
+            _record_connection_run(
+                connection,
+                state_key="last_source_reconciliation",
+                ok=ok,
+                payload=result,
+                mark_error_status=False,
+            )
+            results.append(
+                {
+                    "connection_id": connection.id,
+                    "provider": "bog_source_reconciliation",
+                    "user_id": connection.user_id,
+                    "fleet_id": connection.fleet_id,
+                    **result,
+                }
+            )
+            logger.info(
+                "BoG source reconciliation job finished",
+                extra={
+                    "connection_id": connection.id,
+                    "ok": ok,
+                    "available_delta": result.get("available_delta"),
+                    "current_delta": result.get("current_delta"),
+                },
+            )
+        except Exception as exc:
+            error_count += 1
+            payload = {
+                "ok": False,
+                "status": "ERROR",
+                "currency": currency,
+                "checked_at": timezone.now().isoformat(),
+                "detail": str(exc),
+            }
+            _record_connection_run(
+                connection,
+                state_key="last_source_reconciliation",
+                ok=False,
+                payload=payload,
+                mark_error_status=False,
+            )
+            results.append(
+                {
+                    "connection_id": connection.id,
+                    "provider": "bog_source_reconciliation",
+                    "user_id": connection.user_id,
+                    "fleet_id": connection.fleet_id,
+                    **payload,
+                }
+            )
+            logger.exception("BoG source reconciliation job failed for connection %s", connection.id)
+
+    return {
+        "job": "bog_source_reconciliation",
+        "checked_connections": checked_connections,
+        "ok_connections": ok_connections,
+        "mismatch_count": mismatch_count,
+        "error_count": error_count,
         "results": results,
     }

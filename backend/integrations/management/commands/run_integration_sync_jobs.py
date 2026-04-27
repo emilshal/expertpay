@@ -3,17 +3,18 @@ from django.core.management.base import BaseCommand
 from integrations.jobs import (
     run_bog_deposit_sync_jobs,
     run_bog_payout_status_sync_jobs,
+    run_bog_source_reconciliation_jobs,
     run_yandex_sync_jobs,
 )
 
 
 class Command(BaseCommand):
-    help = "Run background sync jobs for Yandex earnings, BoG incoming deposits, and BoG payout statuses."
+    help = "Run background sync jobs for Yandex earnings, BoG deposits, payouts, and source account reconciliation."
 
     def add_arguments(self, parser):
         parser.add_argument(
             "--job",
-            choices=["all", "yandex", "bog_deposits", "bog_payouts"],
+            choices=["all", "yandex", "bog_deposits", "bog_payouts", "bog_source_reconciliation"],
             default="all",
             help="Select one sync job or run all of them.",
         )
@@ -81,6 +82,23 @@ class Command(BaseCommand):
                     f"BoG payout sync: connections={summary['checked_connections']} ok={summary['ok_connections']} "
                     f"errors={summary['error_count']} checked={summary['checked_count']} "
                     f"updated={summary['updated_count']} payout_errors={summary['payout_error_count']}"
+                )
+            )
+
+        if job in {"all", "bog_source_reconciliation"}:
+            summary = run_bog_source_reconciliation_jobs(
+                user_id=options["user_id"],
+                fleet_name=options["fleet_name"] or None,
+                connection_id=options["connection_id"],
+                active_only=active_only,
+                currency=options["currency"],
+            )
+            summaries.append(summary)
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"BoG source reconciliation: connections={summary['checked_connections']} "
+                    f"ok={summary['ok_connections']} mismatches={summary['mismatch_count']} "
+                    f"errors={summary['error_count']}"
                 )
             )
 

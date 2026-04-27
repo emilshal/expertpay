@@ -1068,6 +1068,67 @@ def _verify_bog_source_balance_for_withdrawal(*, connection: ProviderConnection,
     return balance
 
 
+def build_bog_source_account_reconciliation(*, connection: ProviderConnection, currency: str = "GEL"):
+    balance = get_bog_source_account_balance(connection=connection, currency=currency)
+    available_balance = balance["available_balance"].quantize(Decimal("0.01"))
+    current_balance = balance["current_balance"].quantize(Decimal("0.01"))
+
+    def _sum_ledger_entries(queryset):
+        return (queryset.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")).quantize(Decimal("0.01"))
+
+    total_fleet_reserves = _sum_ledger_entries(
+        LedgerEntry.objects.filter(
+            account__account_type=LedgerAccount.AccountType.FLEET_RESERVE,
+            currency=currency,
+        )
+    )
+    payout_clearing_balance = _sum_ledger_entries(
+        LedgerEntry.objects.filter(
+            account__account_type=LedgerAccount.AccountType.PAYOUT_CLEARING,
+            currency=currency,
+        )
+    )
+    platform_fee_balance = _sum_ledger_entries(
+        LedgerEntry.objects.filter(
+            account__account_type=LedgerAccount.AccountType.PLATFORM_FEE,
+            currency=currency,
+        )
+    )
+    treasury_balance = _sum_ledger_entries(
+        LedgerEntry.objects.filter(
+            account__account_type=LedgerAccount.AccountType.TREASURY,
+            currency=currency,
+        )
+    )
+
+    expected_source_liability = (total_fleet_reserves + payout_clearing_balance).quantize(Decimal("0.01"))
+    expected_source_with_unmoved_fees = (expected_source_liability + platform_fee_balance).quantize(Decimal("0.01"))
+    available_delta = (available_balance - expected_source_liability).quantize(Decimal("0.01"))
+    current_delta = (current_balance - expected_source_liability).quantize(Decimal("0.01"))
+    status = "OK" if available_delta >= Decimal("0.00") and current_delta >= Decimal("0.00") else "MISMATCH"
+
+    return {
+        "ok": status == "OK",
+        "status": status,
+        "currency": currency,
+        "account_number": _normalize_bog_account_number(settings.BOG_SOURCE_ACCOUNT_NUMBER),
+        "available_balance": _format_money(available_balance),
+        "current_balance": _format_money(current_balance),
+        "expected_source_liability": _format_money(expected_source_liability),
+        "expected_source_with_unmoved_fees": _format_money(expected_source_with_unmoved_fees),
+        "available_delta": _format_money(available_delta),
+        "current_delta": _format_money(current_delta),
+        "fleet_reserves_total": _format_money(total_fleet_reserves),
+        "payout_clearing_balance": _format_money(payout_clearing_balance),
+        "platform_fee_balance": _format_money(platform_fee_balance),
+        "treasury_ledger_balance": _format_money(treasury_balance),
+        "checked_at": timezone.now().isoformat(),
+        "detail": ""
+        if status == "OK"
+        else "BoG source account balance is below internal fleet reserve plus payout clearing obligations.",
+    }
+
+
 def _build_bog_document_payload(*, withdrawal: WithdrawalRequest):
     bank_account = withdrawal.bank_account
     beneficiary_bank_code = _infer_bog_bank_code(bank_account.bank_name)

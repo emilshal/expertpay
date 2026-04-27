@@ -38,6 +38,7 @@ from .models import (
     YandexTransactionRecord,
 )
 from .services import (
+    build_bog_source_account_reconciliation,
     create_bog_card_order,
     get_valid_bog_access_token,
     import_unprocessed_events,
@@ -1378,6 +1379,13 @@ class ReconciliationReportTests(APITestCase):
         )
         self.client.force_authenticate(self.owner)
         self.yandex_connection = None
+        self.bog_connection = ProviderConnection.objects.create(
+            user=self.owner,
+            provider=ProviderConnection.Provider.BANK_OF_GEORGIA,
+            external_account_id="reconciliation-bog-owner",
+            status="active",
+            config={},
+        )
 
     def _ensure_owner_yandex_connection(self):
         if self.yandex_connection is None:
@@ -1389,6 +1397,24 @@ class ReconciliationReportTests(APITestCase):
                 config={"mode": "live"},
             )
         return self.yandex_connection
+
+    @override_settings(BOG_SOURCE_ACCOUNT_NUMBER="GE00BG00000000000001")
+    @patch("integrations.services._bog_request")
+    def test_bog_source_reconciliation_flags_bank_cash_below_internal_obligations(self, mocked_request):
+        mocked_request.return_value = _bog_balance_response(available="80.00", current="80.00")
+        record_fleet_reserve_deposit(
+            fleet=self.fleet,
+            amount=Decimal("100.00"),
+            created_by=self.owner,
+        )
+
+        report = build_bog_source_account_reconciliation(connection=self.bog_connection)
+
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["status"], "MISMATCH")
+        self.assertEqual(report["available_balance"], "80.00")
+        self.assertEqual(report["expected_source_liability"], "100.00")
+        self.assertEqual(report["available_delta"], "-20.00")
 
     def _create_yandex_event(self, *, external_id: str, driver_external_id: str, amount: str):
         event = ExternalEvent.objects.create(
@@ -2123,10 +2149,17 @@ class IntegrationBackgroundJobCommandTests(APITestCase):
             config={},
         )
 
+    @patch("integrations.jobs.build_bog_source_account_reconciliation")
     @patch("integrations.jobs.sync_open_bog_payouts")
     @patch("integrations.jobs.sync_bog_deposits")
     @patch("integrations.jobs.live_sync_yandex_data")
-    def test_run_integration_sync_jobs_runs_all_active_jobs(self, mocked_yandex, mocked_deposits, mocked_payouts):
+    def test_run_integration_sync_jobs_runs_all_active_jobs(
+        self,
+        mocked_yandex,
+        mocked_deposits,
+        mocked_payouts,
+        mocked_source_reconciliation,
+    ):
         mocked_yandex.return_value = {
             "ok": True,
             "detail": "ok",
@@ -2148,6 +2181,13 @@ class IntegrationBackgroundJobCommandTests(APITestCase):
             "error_count": 0,
             "errors": [],
         }
+        mocked_source_reconciliation.return_value = {
+            "ok": True,
+            "status": "OK",
+            "available_delta": "12.00",
+            "current_delta": "12.00",
+            "detail": "",
+        }
 
         stdout = StringIO()
         call_command("run_integration_sync_jobs", stdout=stdout)
@@ -2155,20 +2195,30 @@ class IntegrationBackgroundJobCommandTests(APITestCase):
         self.assertEqual(mocked_yandex.call_count, 2)
         self.assertEqual(mocked_deposits.call_count, 2)
         self.assertEqual(mocked_payouts.call_count, 2)
+        self.assertEqual(mocked_source_reconciliation.call_count, 2)
         self.assertIn("Yandex sync: connections=2 ok=2 errors=0 imported=2 total=25.00", stdout.getvalue())
         self.assertIn("BoG deposit sync: connections=2 ok=2 errors=0 checked=8 matched=4 credited=2 total=80.00", stdout.getvalue())
         self.assertIn("BoG payout sync: connections=2 ok=2 errors=0 checked=6 updated=4 payout_errors=0", stdout.getvalue())
+        self.assertIn("BoG source reconciliation: connections=2 ok=2 mismatches=0 errors=0", stdout.getvalue())
 
         self.yandex_connection.refresh_from_db()
         self.bog_connection.refresh_from_db()
         self.assertIn("last_live_sync", self.yandex_connection.config)
         self.assertIn("last_deposit_sync", self.bog_connection.config)
         self.assertIn("last_payout_sync", self.bog_connection.config)
+        self.assertIn("last_source_reconciliation", self.bog_connection.config)
 
+    @patch("integrations.jobs.build_bog_source_account_reconciliation")
     @patch("integrations.jobs.sync_open_bog_payouts")
     @patch("integrations.jobs.sync_bog_deposits")
     @patch("integrations.jobs.live_sync_yandex_data")
-    def test_run_integration_sync_jobs_can_scope_to_one_fleet(self, mocked_yandex, mocked_deposits, mocked_payouts):
+    def test_run_integration_sync_jobs_can_scope_to_one_fleet(
+        self,
+        mocked_yandex,
+        mocked_deposits,
+        mocked_payouts,
+        mocked_source_reconciliation,
+    ):
         mocked_yandex.return_value = {
             "ok": True,
             "detail": "ok",
@@ -2190,6 +2240,7 @@ class IntegrationBackgroundJobCommandTests(APITestCase):
             "error_count": 0,
             "errors": [],
         }
+        mocked_source_reconciliation.return_value = {"ok": True, "status": "OK"}
 
         call_command("run_integration_sync_jobs", "--fleet-name", self.fleet.name)
 
@@ -2199,11 +2250,20 @@ class IntegrationBackgroundJobCommandTests(APITestCase):
         self.assertEqual(mocked_deposits.call_args.kwargs["connection"].id, self.bog_connection.id)
         self.assertEqual(mocked_payouts.call_count, 1)
         self.assertEqual(mocked_payouts.call_args.kwargs["connection"].id, self.bog_connection.id)
+        self.assertEqual(mocked_source_reconciliation.call_count, 1)
+        self.assertEqual(mocked_source_reconciliation.call_args.kwargs["connection"].id, self.bog_connection.id)
 
+    @patch("integrations.jobs.build_bog_source_account_reconciliation")
     @patch("integrations.jobs.sync_open_bog_payouts")
     @patch("integrations.jobs.sync_bog_deposits")
     @patch("integrations.jobs.live_sync_yandex_data")
-    def test_run_integration_sync_jobs_can_scope_to_single_user(self, mocked_yandex, mocked_deposits, mocked_payouts):
+    def test_run_integration_sync_jobs_can_scope_to_single_user(
+        self,
+        mocked_yandex,
+        mocked_deposits,
+        mocked_payouts,
+        mocked_source_reconciliation,
+    ):
         mocked_yandex.return_value = {
             "ok": True,
             "detail": "ok",
@@ -2225,6 +2285,7 @@ class IntegrationBackgroundJobCommandTests(APITestCase):
             "error_count": 0,
             "errors": [],
         }
+        mocked_source_reconciliation.return_value = {"ok": True, "status": "OK"}
 
         call_command("run_integration_sync_jobs", "--user-id", str(self.owner.id))
 
@@ -2234,6 +2295,8 @@ class IntegrationBackgroundJobCommandTests(APITestCase):
         self.assertEqual(mocked_deposits.call_args.kwargs["connection"].user_id, self.owner.id)
         self.assertEqual(mocked_payouts.call_count, 1)
         self.assertEqual(mocked_payouts.call_args.kwargs["connection"].user_id, self.owner.id)
+        self.assertEqual(mocked_source_reconciliation.call_count, 1)
+        self.assertEqual(mocked_source_reconciliation.call_args.kwargs["connection"].user_id, self.owner.id)
 
     @patch("integrations.management.commands.run_money_smoke_sync.run_bog_payout_status_sync_jobs")
     @patch("integrations.management.commands.run_money_smoke_sync.run_yandex_sync_jobs")
