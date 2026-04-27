@@ -16,6 +16,13 @@ import {
 } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 
+type BogFeeTransfer = {
+  provider_unique_key?: number | string | null;
+  provider_status?: string;
+  status?: string;
+  failure_reason?: string;
+};
+
 export default function PayoutsPage() {
   const { pick, locale } = useI18n();
   const [withdrawals, setWithdrawals] = useState<WithdrawalItem[]>([]);
@@ -85,6 +92,12 @@ export default function PayoutsPage() {
     return status || pick("Pending bank status", "ბანკის სტატუსს ელოდება");
   }
 
+  function getBogFeeTransfer(payout?: BogPayout): BogFeeTransfer | null {
+    const value = payout?.response_payload?.fee_transfer;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    return value as BogFeeTransfer;
+  }
+
   function formatTransactionDate(value: string) {
     if (!value) return "";
     const date = new Date(value);
@@ -134,6 +147,7 @@ export default function PayoutsPage() {
           withdrawals.map((item) => {
             const bogPayout = bogByWithdrawal.get(item.id);
             const payout = payoutByWithdrawal.get(item.id);
+            const feeTransfer = getBogFeeTransfer(bogPayout);
             return (
               <div key={item.id} className="txRow" role="listitem">
                 <div className="txMain">
@@ -152,6 +166,18 @@ export default function PayoutsPage() {
                   {bogPayout?.failure_reason ? <div className="txSub">{pick("Reason", "მიზეზი")}: {bogPayout.failure_reason}</div> : null}
                   {bogPayout?.provider_unique_key ? (
                     <div className="txSub">{pick("Bank document key", "ბანკის დოკუმენტის კოდი")}: {bogPayout.provider_unique_key}</div>
+                  ) : null}
+                  {feeTransfer?.provider_unique_key ? (
+                    <div className="txSub">{pick("Fee document key", "საკომისიოს დოკუმენტის კოდი")}: {feeTransfer.provider_unique_key}</div>
+                  ) : null}
+                  {feeTransfer?.status ? (
+                    <div className="txSub">{pick("Fee transfer status", "საკომისიოს გადარიცხვის სტატუსი")}: {humanStatus(String(feeTransfer.status))}</div>
+                  ) : null}
+                  {feeTransfer?.provider_status ? (
+                    <div className="txSub">{pick("Fee document state", "საკომისიოს დოკუმენტის სტატუსი")}: {humanBogProviderStatus(String(feeTransfer.provider_status))}</div>
+                  ) : null}
+                  {feeTransfer?.failure_reason ? (
+                    <div className="txSub">{pick("Fee transfer issue", "საკომისიოს გადარიცხვის პრობლემა")}: {feeTransfer.failure_reason}</div>
                   ) : null}
                 </div>
                 <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "flex-end" }}>

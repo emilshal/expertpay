@@ -74,6 +74,7 @@ class Command(BaseCommand):
                 "config": {
                     "mode": "live",
                     "source_account_number": settings.BOG_SOURCE_ACCOUNT_NUMBER,
+                    "fee_account_number": settings.BOG_FEE_ACCOUNT_NUMBER,
                 },
             },
         )

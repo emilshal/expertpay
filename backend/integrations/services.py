@@ -998,6 +998,34 @@ def _infer_bog_bank_code(bank_name: str):
     return ""
 
 
+def _normalize_bog_account_number(account_number: str):
+    normalized = re.sub(r"\s+", "", account_number or "").upper()
+    if normalized.endswith("GEL"):
+        normalized = normalized[:-3]
+    return normalized
+
+
+def _infer_bog_bank_code_from_account(account_number: str):
+    normalized = _normalize_bog_account_number(account_number)
+    bank_token = normalized[4:6] if len(normalized) >= 6 else ""
+    if bank_token == "BG":
+        return "BAGAGE22"
+    if bank_token == "TB":
+        return "TBCBGE22"
+    return ""
+
+
+def _extract_bog_document_result(response: dict):
+    body = response.get("body")
+    response_items = body if isinstance(body, list) else []
+    first_item = response_items[0] if response_items else {}
+    return {
+        "unique_key": first_item.get("UniqueKey"),
+        "result_code": first_item.get("ResultCode"),
+        "match_score": first_item.get("Match"),
+    }
+
+
 def _build_bog_document_payload(*, withdrawal: WithdrawalRequest):
     bank_account = withdrawal.bank_account
     beneficiary_bank_code = _infer_bog_bank_code(bank_account.bank_name)
@@ -1027,6 +1055,49 @@ def _build_bog_document_payload(*, withdrawal: WithdrawalRequest):
             "CheckInn": beneficiary_bank_code == "BAGAGE22",
             "BeneficiaryName": bank_account.beneficiary_name,
             "AdditionalInformation": withdrawal.note or "",
+        }
+    ]
+    return payload, unique_id
+
+
+def _build_bog_fee_transfer_payload(*, withdrawal: WithdrawalRequest):
+    fee_amount = Decimal(str(withdrawal.fee_amount or "0.00")).quantize(Decimal("0.01"))
+    if fee_amount <= Decimal("0.00"):
+        raise ValueError("Withdrawal has no fee to transfer.")
+
+    fee_account_number = _normalize_bog_account_number(settings.BOG_FEE_ACCOUNT_NUMBER)
+    if not fee_account_number:
+        raise ValueError("Missing BoG setting: BOG_FEE_ACCOUNT_NUMBER")
+
+    beneficiary_bank_code = _infer_bog_bank_code_from_account(fee_account_number)
+    if not beneficiary_bank_code:
+        raise ValueError("Unsupported bank for automatic BoG fee transfer.")
+
+    beneficiary_inn = (settings.BOG_FEE_BENEFICIARY_INN or settings.BOG_PAYER_INN or "").strip()
+    if not beneficiary_inn:
+        raise ValueError("Missing BoG setting: BOG_FEE_BENEFICIARY_INN")
+
+    unique_id = str(uuid.uuid4())
+    document_no = f"{settings.BOG_FEE_DOCUMENT_PREFIX}{withdrawal.id}"[:16]
+    nomination = (settings.BOG_FEE_NOMINATION or f"ExpertPay withdrawal fee #{withdrawal.id}")[:250]
+    payload = [
+        {
+            "Nomination": nomination,
+            "PayerInn": settings.BOG_PAYER_INN,
+            "PayerName": settings.BOG_PAYER_NAME or "",
+            "DispatchType": "BULK",
+            "ValueDate": timezone.now().isoformat(),
+            "IsSalary": False,
+            "UniqueId": unique_id,
+            "Amount": float(fee_amount),
+            "DocumentNo": document_no,
+            "SourceAccountNumber": _normalize_bog_account_number(settings.BOG_SOURCE_ACCOUNT_NUMBER),
+            "BeneficiaryAccountNumber": fee_account_number,
+            "BeneficiaryBankCode": beneficiary_bank_code,
+            "BeneficiaryInn": beneficiary_inn,
+            "CheckInn": beneficiary_bank_code == "BAGAGE22",
+            "BeneficiaryName": settings.BOG_FEE_BENEFICIARY_NAME or settings.BOG_PAYER_NAME or "",
+            "AdditionalInformation": f"Withdrawal #{withdrawal.id} fee",
         }
     ]
     return payload, unique_id
@@ -2051,8 +2122,17 @@ def _reverse_withdrawal_to_wallet(*, withdrawal: WithdrawalRequest, reason: str,
 
 
 def submit_withdrawal_to_bog(*, connection: ProviderConnection, withdrawal: WithdrawalRequest):
-    if BogPayout.objects.filter(withdrawal=withdrawal, provider_unique_key__isnull=False).exists():
-        payout = BogPayout.objects.select_related("withdrawal").get(withdrawal=withdrawal)
+    existing_payout = BogPayout.objects.filter(withdrawal=withdrawal, provider_unique_key__isnull=False).first()
+    if existing_payout is not None:
+        payout = BogPayout.objects.select_related("withdrawal").get(id=existing_payout.id)
+        response_payload = _submit_bog_fee_transfer_if_needed(
+            connection=connection,
+            withdrawal=withdrawal,
+            response_payload=payout.response_payload,
+        )
+        if response_payload != payout.response_payload:
+            payout.response_payload = response_payload
+            payout.save(update_fields=["response_payload", "updated_at"])
         return payout, False
 
     missing = _bog_missing_payout_env_vars()
@@ -2067,12 +2147,10 @@ def submit_withdrawal_to_bog(*, connection: ProviderConnection, withdrawal: With
         body=request_payload,
     )
 
-    body = response.get("body")
-    response_items = body if isinstance(body, list) else []
-    first_item = response_items[0] if response_items else {}
-    unique_key = first_item.get("UniqueKey")
-    result_code = first_item.get("ResultCode")
-    match_score = first_item.get("Match")
+    result = _extract_bog_document_result(response)
+    unique_key = result["unique_key"]
+    result_code = result["result_code"]
+    match_score = result["match_score"]
 
     payout, created = BogPayout.objects.get_or_create(
         withdrawal=withdrawal,
@@ -2113,6 +2191,11 @@ def submit_withdrawal_to_bog(*, connection: ProviderConnection, withdrawal: With
         payout.match_score = match_score
 
     if response.get("ok") and unique_key:
+        payout.response_payload = _submit_bog_fee_transfer_if_needed(
+            connection=connection,
+            withdrawal=withdrawal,
+            response_payload=payout.response_payload,
+        )
         payout.status = BogPayout.Status.PROCESSING
         payout.failure_reason = ""
         payout.save(
@@ -2160,6 +2243,110 @@ def submit_withdrawal_to_bog(*, connection: ProviderConnection, withdrawal: With
     raise ValueError(failure_reason)
 
 
+def _submit_bog_fee_transfer_if_needed(
+    *,
+    connection: ProviderConnection,
+    withdrawal: WithdrawalRequest,
+    response_payload: dict,
+):
+    response_payload = _normalize_bog_payout_response_payload(response_payload)
+    existing_fee_transfer = response_payload.get("fee_transfer")
+    fee_transfer = dict(existing_fee_transfer) if isinstance(existing_fee_transfer, dict) else {}
+    if fee_transfer.get("provider_unique_key"):
+        return response_payload
+
+    fee_amount = Decimal(str(withdrawal.fee_amount or "0.00")).quantize(Decimal("0.01"))
+    if fee_amount <= Decimal("0.00") or not settings.BOG_FEE_ACCOUNT_NUMBER:
+        return response_payload
+
+    try:
+        request_payload, unique_id = _build_bog_fee_transfer_payload(withdrawal=withdrawal)
+        response = _bog_request(
+            connection=connection,
+            method="POST",
+            endpoint="/documents/domestic",
+            body=request_payload,
+        )
+        result = _extract_bog_document_result(response)
+        unique_key = result["unique_key"]
+        is_submitted = bool(response.get("ok") and unique_key)
+        response_payload["fee_transfer"] = {
+            "configured": True,
+            "submitted": is_submitted,
+            "provider_unique_id": unique_id,
+            "provider_unique_key": unique_key,
+            "provider_status": "",
+            "status": BogPayout.Status.PROCESSING.value if is_submitted else BogPayout.Status.FAILED.value,
+            "result_code": result["result_code"],
+            "match_score": result["match_score"],
+            "failure_reason": ""
+            if is_submitted
+            else f"BoG fee transfer submission failed (HTTP {response.get('http_status') or 'n/a'}).",
+            "submission": _build_bog_debug_event(
+                response=response,
+                endpoint="/documents/domestic",
+                request_body=request_payload[0],
+            ),
+            "latest_status": {},
+        }
+    except Exception as exc:
+        response_payload["fee_transfer"] = {
+            "configured": True,
+            "submitted": False,
+            "provider_unique_id": "",
+            "provider_unique_key": None,
+            "provider_status": "",
+            "status": BogPayout.Status.FAILED.value,
+            "result_code": None,
+            "match_score": None,
+            "failure_reason": str(exc),
+            "submission": {},
+            "latest_status": {},
+            "recorded_at": timezone.now().isoformat(),
+        }
+    return response_payload
+
+
+def _sync_bog_fee_transfer_status_if_needed(
+    *,
+    connection: ProviderConnection,
+    response_payload: dict,
+):
+    response_payload = _normalize_bog_payout_response_payload(response_payload)
+    existing_fee_transfer = response_payload.get("fee_transfer")
+    if not isinstance(existing_fee_transfer, dict):
+        return response_payload
+
+    fee_transfer = dict(existing_fee_transfer)
+    unique_key = fee_transfer.get("provider_unique_key")
+    if not unique_key:
+        return response_payload
+
+    response = _bog_request(
+        connection=connection,
+        method="GET",
+        endpoint=f"/documents/status/{unique_key}",
+    )
+    body = response.get("body") if isinstance(response.get("body"), dict) else {}
+    provider_status = str(body.get("Status") or "")
+    fee_transfer["provider_status"] = provider_status
+    fee_transfer["result_code"] = body.get("ResultCode")
+    fee_transfer["match_score"] = body.get("Match")
+    fee_transfer["latest_status"] = _build_bog_debug_event(
+        response=response,
+        endpoint=f"/documents/status/{unique_key}",
+        request_body={},
+    )
+    if response.get("ok"):
+        fee_transfer["status"] = _map_bog_status(provider_status).value
+        fee_transfer["failure_reason"] = ""
+    else:
+        fee_transfer["status"] = BogPayout.Status.FAILED.value
+        fee_transfer["failure_reason"] = f"BoG fee transfer status sync failed (HTTP {response.get('http_status') or 'n/a'})."
+    response_payload["fee_transfer"] = fee_transfer
+    return response_payload
+
+
 def _map_bog_status(provider_status: str):
     normalized = (provider_status or "").strip().lower()
     letter_code = normalized.upper() if len(normalized) == 1 else ""
@@ -2178,13 +2365,14 @@ def _map_bog_status(provider_status: str):
 
 def _normalize_bog_payout_response_payload(payload):
     if isinstance(payload, dict) and any(
-        key in payload for key in ("submission", "latest_status", "otp_requests", "sign_attempts")
+        key in payload for key in ("submission", "latest_status", "otp_requests", "sign_attempts", "fee_transfer")
     ):
         return {
             "submission": payload.get("submission") or {},
             "latest_status": payload.get("latest_status") or {},
             "otp_requests": list(payload.get("otp_requests") or []),
             "sign_attempts": list(payload.get("sign_attempts") or []),
+            "fee_transfer": payload.get("fee_transfer") or {},
         }
     latest_status = payload if isinstance(payload, dict) else {}
     return {
@@ -2192,6 +2380,7 @@ def _normalize_bog_payout_response_payload(payload):
         "latest_status": latest_status,
         "otp_requests": [],
         "sign_attempts": [],
+        "fee_transfer": {},
     }
 
 
@@ -2310,6 +2499,15 @@ def sync_bog_payout_status(*, payout: BogPayout):
             response=response,
             endpoint=f"/documents/status/{payout.provider_unique_key}",
             request_body={},
+        )
+        response_payload = _submit_bog_fee_transfer_if_needed(
+            connection=locked_payout.connection,
+            withdrawal=locked_payout.withdrawal,
+            response_payload=response_payload,
+        )
+        response_payload = _sync_bog_fee_transfer_status_if_needed(
+            connection=locked_payout.connection,
+            response_payload=response_payload,
         )
         locked_payout.response_payload = response_payload
         locked_payout.last_status_checked_at = timezone.now()
