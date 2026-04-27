@@ -1,9 +1,11 @@
+from datetime import timedelta
 from decimal import Decimal
 import logging
 
 from django.conf import settings
 from django.db import transaction as db_transaction
 from django.db.models import Count, Q, Sum
+from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -147,6 +149,29 @@ def _driver_reward_from_completed_withdrawals(*, completed_withdrawals_count):
     if completed_withdrawals_count < 100:
         return "No reward yet"
     return "5 free withdrawals"
+
+
+def _recent_duplicate_withdrawal(*, user, fleet, bank_account, amount, fee_amount, currency):
+    duplicate_window_seconds = max(int(getattr(settings, "WITHDRAWAL_DUPLICATE_WINDOW_SECONDS", 30)), 0)
+    if duplicate_window_seconds <= 0:
+        return None
+
+    cutoff = timezone.now() - timedelta(seconds=duplicate_window_seconds)
+    return (
+        WithdrawalRequest.objects.select_for_update()
+        .filter(
+            user=user,
+            fleet=fleet,
+            bank_account=bank_account,
+            amount=amount,
+            fee_amount=fee_amount,
+            currency=currency,
+            created_at__gte=cutoff,
+        )
+        .exclude(status=WithdrawalRequest.Status.FAILED)
+        .order_by("-created_at", "-id")
+        .first()
+    )
 
 
 class BalanceView(APIView):
@@ -318,6 +343,11 @@ class WithdrawalCreateView(APIView):
             finalize_idempotent_request(idempotency_record, status_code=404, response_body=error_payload)
             return Response(error_payload, status=status.HTTP_404_NOT_FOUND)
 
+        if not bank_account.beneficiary_inn.strip():
+            error_payload = {"detail": "Bank account is missing beneficiary ID number."}
+            finalize_idempotent_request(idempotency_record, status_code=400, response_body=error_payload)
+            return Response(error_payload, status=status.HTTP_400_BAD_REQUEST)
+
         if amount <= Decimal("0"):
             error_payload = {"detail": "Amount must be greater than zero."}
             finalize_idempotent_request(idempotency_record, status_code=400, response_body=error_payload)
@@ -348,6 +378,19 @@ class WithdrawalCreateView(APIView):
                 locked_by_id = {account.id: account for account in locked_accounts}
                 driver_balance = get_account_balance(locked_by_id[driver_account.id], wallet.currency)
                 fleet_reserve_balance = get_account_balance(locked_by_id[fleet_reserve_account.id], wallet.currency)
+
+                duplicate_withdrawal = _recent_duplicate_withdrawal(
+                    user=request.user,
+                    fleet=driver_membership.fleet,
+                    bank_account=bank_account,
+                    amount=amount,
+                    fee_amount=fee_amount,
+                    currency=wallet.currency,
+                )
+                if duplicate_withdrawal is not None:
+                    response_payload = WithdrawalSerializer(duplicate_withdrawal).data
+                    finalize_idempotent_request(idempotency_record, status_code=200, response_body=response_payload)
+                    return Response(response_payload, status=status.HTTP_200_OK)
 
                 if amount + fee_amount > driver_balance:
                     error_payload = {"detail": "Insufficient driver available balance for this withdrawal."}
@@ -400,6 +443,19 @@ class WithdrawalCreateView(APIView):
                 ensure_opening_entry(ledger_account, wallet.balance, created_by=request.user)
                 locked_ledger_account = LedgerAccount.objects.select_for_update().get(id=ledger_account.id)
                 current_balance = get_account_balance(locked_ledger_account, wallet.currency)
+
+                duplicate_withdrawal = _recent_duplicate_withdrawal(
+                    user=request.user,
+                    fleet=None,
+                    bank_account=bank_account,
+                    amount=amount,
+                    fee_amount=fee_amount,
+                    currency=wallet.currency,
+                )
+                if duplicate_withdrawal is not None:
+                    response_payload = WithdrawalSerializer(duplicate_withdrawal).data
+                    finalize_idempotent_request(idempotency_record, status_code=200, response_body=response_payload)
+                    return Response(response_payload, status=status.HTTP_200_OK)
 
                 if amount + fee_amount > current_balance:
                     error_payload = {"detail": "Insufficient wallet balance for this withdrawal."}

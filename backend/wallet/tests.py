@@ -1150,6 +1150,65 @@ class DriverWithdrawalApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("fleet reserve", response.data["detail"])
 
+    def test_withdrawal_fails_when_bank_account_is_missing_beneficiary_inn(self):
+        incomplete_bank_account = BankAccount.objects.create(
+            user=self.driver,
+            bank_name="Bank of Georgia",
+            account_number="GE64BG00000000000099",
+            beneficiary_name="Driver Missing Inn",
+            beneficiary_inn="",
+        )
+        self._fund_accounts(reserve_amount="100.00", available_amount="100.00")
+
+        response = self.client.post(
+            reverse("withdrawal-create"),
+            data={"bank_account_id": incomplete_bank_account.id, "amount": "10.00"},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+            HTTP_IDEMPOTENCY_KEY="driver-withdrawal-missing-inn",
+            HTTP_X_REQUEST_ID="req-driver-withdrawal-missing-inn",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("beneficiary ID number", response.data["detail"])
+
+    def test_duplicate_withdrawal_returns_existing_request_without_second_debit(self):
+        self._fund_accounts(reserve_amount="100.00", available_amount="100.00")
+
+        first = self.client.post(
+            reverse("withdrawal-create"),
+            data={"bank_account_id": self.driver_bank_account.id, "amount": "10.00"},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+            HTTP_IDEMPOTENCY_KEY="driver-withdrawal-duplicate-1",
+            HTTP_X_REQUEST_ID="req-driver-withdrawal-duplicate-1",
+        )
+        second = self.client.post(
+            reverse("withdrawal-create"),
+            data={"bank_account_id": self.driver_bank_account.id, "amount": "10.00"},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+            HTTP_IDEMPOTENCY_KEY="driver-withdrawal-duplicate-2",
+            HTTP_X_REQUEST_ID="req-driver-withdrawal-duplicate-2",
+        )
+
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.data["id"], first.data["id"])
+        self.assertEqual(
+            WithdrawalRequest.objects.filter(
+                user=self.driver,
+                bank_account=self.driver_bank_account,
+                amount=Decimal("10.00"),
+            ).count(),
+            1,
+        )
+        driver_account = LedgerAccount.objects.get(
+            user=self.driver,
+            account_type=LedgerAccount.AccountType.DRIVER_AVAILABLE,
+        )
+        self.assertEqual(get_account_balance(driver_account), Decimal("89.50"))
+
     def test_multiple_withdrawals_are_allowed_without_cooldown(self):
         self._fund_accounts(reserve_amount="100.00", available_amount="100.00")
 

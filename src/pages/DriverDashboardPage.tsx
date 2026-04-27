@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   bankAccounts,
   createBankAccount,
@@ -48,6 +48,9 @@ function friendlyWithdrawalError(error: unknown, pick: PickFn) {
   }
   if (message.includes("Only Bank of Georgia accounts are allowed right now")) {
     return pick("Only Bank of Georgia accounts with GE..BG.. are allowed right now.", "ახლა დაშვებულია მხოლოდ Bank of Georgia-ს ანგარიშები GE..BG.. ფორმატით.");
+  }
+  if (message.includes("Bank account is missing beneficiary ID number")) {
+    return pick("Enter the beneficiary personal ID number before withdrawing.", "გატანამდე შეიყვანეთ მიმღების პირადი ნომერი.");
   }
   return message;
 }
@@ -366,12 +369,14 @@ function WithdrawModal({
   const previousFee = 1;
   const savedBogAccount =
     bankAccounts.find((item) => item.bank_name.toLowerCase() === "bank of georgia") ?? null;
-  const [savedBankId, setSavedBankId] = useState<number | null>(savedBogAccount?.id ?? null);
+  const usableSavedBogAccount = savedBogAccount?.beneficiary_inn?.trim() ? savedBogAccount : null;
+  const [savedBankId, setSavedBankId] = useState<number | null>(usableSavedBogAccount?.id ?? null);
   const [accountNumber, setAccountNumber] = useState(savedBogAccount?.account_number ?? "");
   const [beneficiaryName, setBeneficiaryName] = useState(savedBogAccount?.beneficiary_name ?? "");
   const [beneficiaryInn, setBeneficiaryInn] = useState(savedBogAccount?.beneficiary_inn ?? "");
   const [amount, setAmount] = useState(() => prefilledWithdrawalAmount(availableBalance));
   const [loading, setLoading] = useState(false);
+  const loadingRef = useRef(false);
   const [error, setError] = useState("");
   const [receipt, setReceipt] = useState<{
     bankName: string;
@@ -386,6 +391,8 @@ function WithdrawModal({
   const payoutAmount = Number.isFinite(numericAmount) && numericAmount > 0 ? Math.max(numericAmount - withdrawalFee, 0) : 0;
 
   async function submit() {
+    if (loadingRef.current) return;
+    loadingRef.current = true;
     setLoading(true);
     setError("");
     try {
@@ -397,6 +404,9 @@ function WithdrawModal({
       }
       if (!isBogIban(accountNumber)) {
         throw new Error("Only Bank of Georgia accounts are allowed right now.");
+      }
+      if (!beneficiaryInn.trim()) {
+        throw new Error("Bank account is missing beneficiary ID number.");
       }
       let bankId: number;
       if (savedBankId) {
@@ -426,6 +436,7 @@ function WithdrawModal({
       const message = friendlyWithdrawalError(err, pick);
       setError(message);
     } finally {
+      loadingRef.current = false;
       setLoading(false);
     }
   }
@@ -547,7 +558,7 @@ function WithdrawModal({
               </p>
             ) : null}
 
-            <button className="transferSubmit" type="button" onClick={() => void submit()}>
+            <button className="transferSubmit" type="button" onClick={() => void submit()} disabled={loading}>
               {loading ? pick("Please wait...", "გთხოვთ დაელოდოთ...") : pick("Withdraw Amount", "თანხის გატანა")}
             </button>
             {error ? <p className="statusError">{error}</p> : null}
