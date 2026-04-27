@@ -26,7 +26,7 @@ from ledger.services import (
 )
 from payments.models import InternalTransfer
 from integrations.models import ProviderConnection, YandexTransactionRecord
-from integrations.services import submit_withdrawal_to_bog, sync_bog_deposits
+from integrations.services import BogPayoutPreflightError, submit_withdrawal_to_bog, sync_bog_deposits
 from .models import BankAccount, Deposit, FleetRatingPenalty, IncomingBankTransfer, Wallet, WithdrawalRequest
 from .serializers import (
     AdminNetworkSummarySerializer,
@@ -494,6 +494,20 @@ class WithdrawalCreateView(APIView):
             if connection is not None:
                 try:
                     submit_withdrawal_to_bog(connection=connection, withdrawal=withdrawal)
+                except BogPayoutPreflightError as exc:
+                    logger.warning("Automatic BoG payout preflight failed for withdrawal %s: %s", withdrawal.id, exc)
+                    error_payload = {"detail": str(exc)}
+                    finalize_idempotent_request(idempotency_record, status_code=400, response_body=error_payload)
+                    log_audit(
+                        user=request.user,
+                        action="withdrawal_bog_preflight_failed",
+                        resource_type="withdrawal",
+                        resource_id=withdrawal.id,
+                        request_id=request_id,
+                        ip_address=request.META.get("REMOTE_ADDR"),
+                        metadata={"detail": str(exc), "reversal_detail": "Withdrawal failed before BoG document creation."},
+                    )
+                    return Response(error_payload, status=status.HTTP_400_BAD_REQUEST)
                 except Exception as exc:
                     logger.exception("Automatic BoG payout submission failed for withdrawal %s", withdrawal.id)
                     log_audit(

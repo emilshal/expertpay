@@ -2,12 +2,13 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.test import override_settings
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from accounts.models import DriverFleetMembership, Fleet, FleetPhoneBinding
-from integrations.models import ExternalEvent, ProviderConnection, YandexTransactionRecord
+from integrations.models import BogPayout, ExternalEvent, ProviderConnection, YandexTransactionRecord
 from ledger.models import LedgerAccount, LedgerEntry
 from ledger.services import (
     get_account_balance,
@@ -1189,6 +1190,62 @@ class DriverWithdrawalApiTests(APITestCase):
         )
         self.assertEqual(get_account_balance(driver_account), Decimal("89.50"))
         self.assertEqual(get_account_balance(reserve_account), Decimal("90.00"))
+
+    @override_settings(
+        BOG_SOURCE_ACCOUNT_NUMBER="GE00BG00000000000001",
+        BOG_PAYER_INN="406552145",
+        BOG_PAYER_NAME="LTD EKSPERT PAY",
+    )
+    @patch("integrations.services._bog_request")
+    @patch("integrations.services._bog_missing_payout_env_vars")
+    def test_withdrawal_fails_before_bog_document_when_source_account_has_too_little_cash(
+        self,
+        mocked_missing,
+        mocked_bog_request,
+    ):
+        mocked_missing.return_value = []
+        mocked_bog_request.return_value = {
+            "ok": True,
+            "http_status": 200,
+            "body": {"AvailableBalance": "4.00", "CurrentBalance": "4.00"},
+        }
+        ProviderConnection.objects.create(
+            user=self.owner,
+            fleet=self.fleet,
+            provider=ProviderConnection.Provider.BANK_OF_GEORGIA,
+            external_account_id="bog-low-cash-test",
+            status="active",
+            config={},
+        )
+        self._fund_accounts(reserve_amount="100.00", available_amount="100.00")
+
+        response = self.client.post(
+            reverse("withdrawal-create"),
+            data={"bank_account_id": self.driver_bank_account.id, "amount": "4.50"},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+            HTTP_IDEMPOTENCY_KEY="driver-withdrawal-low-bog-cash",
+            HTTP_X_REQUEST_ID="req-driver-withdrawal-low-bog-cash",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Insufficient funds in the BoG source account", response.data["detail"])
+        self.assertEqual(mocked_bog_request.call_count, 1)
+        self.assertEqual(mocked_bog_request.call_args.kwargs["endpoint"], "/accounts/GE00BG00000000000001/GEL/false")
+        self.assertFalse(BogPayout.objects.exists())
+        withdrawal = WithdrawalRequest.objects.latest("id")
+        self.assertEqual(withdrawal.status, WithdrawalRequest.Status.FAILED)
+        driver_account = LedgerAccount.objects.get(
+            user=self.driver,
+            account_type=LedgerAccount.AccountType.DRIVER_AVAILABLE,
+        )
+        reserve_account = LedgerAccount.objects.get(
+            fleet=self.fleet,
+            account_type=LedgerAccount.AccountType.FLEET_RESERVE,
+        )
+        self.assertEqual(get_account_balance(driver_account), Decimal("100.00"))
+        self.assertEqual(get_account_balance(reserve_account), Decimal("100.00"))
+        self.assertFalse(ExternalEvent.objects.filter(event_type="withdrawal_payout").exists())
 
     def test_duplicate_withdrawal_returns_existing_request_without_second_debit(self):
         self._fund_accounts(reserve_amount="100.00", available_amount="100.00")

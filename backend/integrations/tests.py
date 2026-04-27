@@ -50,6 +50,17 @@ from .services import (
 User = get_user_model()
 
 
+def _bog_balance_response(available="999.00", current=None):
+    return {
+        "ok": True,
+        "http_status": 200,
+        "body": {
+            "AvailableBalance": available,
+            "CurrentBalance": current if current is not None else available,
+        },
+    }
+
+
 class YandexSimulatorApiTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="fleet_owner", password="pass1234")
@@ -2482,11 +2493,14 @@ class BogPayoutApiTests(APITestCase):
     @patch("integrations.services._bog_missing_payout_env_vars")
     def test_submit_bog_payout_moves_withdrawal_to_processing(self, mocked_missing, mocked_request):
         mocked_missing.return_value = []
-        mocked_request.return_value = {
-            "ok": True,
-            "http_status": 200,
-            "body": [{"UniqueKey": 345678, "ResultCode": 0, "Match": 1}],
-        }
+        mocked_request.side_effect = [
+            _bog_balance_response(),
+            {
+                "ok": True,
+                "http_status": 200,
+                "body": [{"UniqueKey": 345678, "ResultCode": 0, "Match": 1}],
+            },
+        ]
 
         withdrawal = self._create_withdrawal()
         response = self.client.post(
@@ -2508,6 +2522,7 @@ class BogPayoutApiTests(APITestCase):
     def test_request_bog_payout_otp_uses_document_key(self, mocked_missing, mocked_request):
         mocked_missing.return_value = []
         mocked_request.side_effect = [
+            _bog_balance_response(),
             {
                 "ok": True,
                 "http_status": 200,
@@ -2538,7 +2553,7 @@ class BogPayoutApiTests(APITestCase):
 
         self.assertEqual(otp_response.status_code, status.HTTP_200_OK)
         self.assertEqual(otp_response.data["detail"], "OTP requested from Bank of Georgia.")
-        otp_call = mocked_request.call_args_list[1]
+        otp_call = mocked_request.call_args_list[2]
         self.assertEqual(otp_call.kwargs["endpoint"], "/otp/request")
         self.assertEqual(otp_call.kwargs["body"], {"ObjectKey": 555001, "ObjectType": 0})
 
@@ -2553,6 +2568,7 @@ class BogPayoutApiTests(APITestCase):
     ):
         mocked_missing.return_value = []
         mocked_request.side_effect = [
+            _bog_balance_response(),
             {
                 "ok": True,
                 "http_status": 200,
@@ -2603,7 +2619,7 @@ class BogPayoutApiTests(APITestCase):
         self.assertEqual(sign_response.status_code, status.HTTP_200_OK)
         self.assertEqual(sign_response.data["detail"], "BoG payout sign request submitted.")
         self.assertEqual(sign_response.data["payout"]["status"], "settled")
-        sign_call = mocked_request.call_args_list[1]
+        sign_call = mocked_request.call_args_list[2]
         self.assertEqual(sign_call.kwargs["endpoint"], "/sign/document")
         self.assertEqual(sign_call.kwargs["body"], {"Otp": "123456", "ObjectKey": 555002})
         withdrawal.refresh_from_db()
@@ -2624,6 +2640,7 @@ class BogPayoutApiTests(APITestCase):
     def test_failed_bog_status_reverses_wallet_balance(self, mocked_missing, mocked_request, mocked_yandex_request):
         mocked_missing.return_value = []
         mocked_request.side_effect = [
+            _bog_balance_response(),
             {
                 "ok": True,
                 "http_status": 200,
@@ -2667,6 +2684,7 @@ class BogPayoutApiTests(APITestCase):
     def test_letter_completed_bog_status_marks_withdrawal_completed(self, mocked_missing, mocked_request):
         mocked_missing.return_value = []
         mocked_request.side_effect = [
+            _bog_balance_response(),
             {
                 "ok": True,
                 "http_status": 200,
@@ -2705,6 +2723,7 @@ class BogPayoutApiTests(APITestCase):
     def test_letter_rejected_bog_status_reverses_wallet_balance(self, mocked_missing, mocked_request):
         mocked_missing.return_value = []
         mocked_request.side_effect = [
+            _bog_balance_response(),
             {
                 "ok": True,
                 "http_status": 200,
@@ -2747,6 +2766,7 @@ class BogPayoutApiTests(APITestCase):
     def test_sync_all_bog_statuses_endpoint_checks_open_payouts(self, mocked_missing, mocked_request):
         mocked_missing.return_value = []
         mocked_request.side_effect = [
+            _bog_balance_response(),
             {
                 "ok": True,
                 "http_status": 200,
@@ -2881,11 +2901,14 @@ class FleetScopedBogPayoutApiTests(APITestCase):
     @patch("integrations.services._bog_missing_payout_env_vars")
     def test_operator_can_submit_fleet_withdrawal_with_owner_connection(self, mocked_missing, mocked_request):
         mocked_missing.return_value = []
-        mocked_request.return_value = {
-            "ok": True,
-            "http_status": 200,
-            "body": [{"UniqueKey": 777111, "ResultCode": 0, "Match": 1}],
-        }
+        mocked_request.side_effect = [
+            _bog_balance_response(),
+            {
+                "ok": True,
+                "http_status": 200,
+                "body": [{"UniqueKey": 777111, "ResultCode": 0, "Match": 1}],
+            },
+        ]
         self.client.force_authenticate(self.operator)
 
         response = self.client.post(
@@ -2914,6 +2937,7 @@ class FleetScopedBogPayoutApiTests(APITestCase):
     def test_operator_can_submit_driver_created_withdrawal_in_same_fleet(self, mocked_missing, mocked_request):
         mocked_missing.return_value = []
         mocked_request.side_effect = [
+            _bog_balance_response(),
             {
                 "ok": True,
                 "http_status": 200,
@@ -2959,7 +2983,7 @@ class FleetScopedBogPayoutApiTests(APITestCase):
         self.assertEqual(auto_payout.connection_id, self.owner_connection.id)
         self.assertEqual(auto_payout.provider_unique_key, 777119)
         self.assertEqual(auto_payout.response_payload["fee_transfer"]["provider_unique_key"], 777120)
-        fee_request_payload = mocked_request.call_args_list[1].kwargs["body"][0]
+        fee_request_payload = mocked_request.call_args_list[2].kwargs["body"][0]
         self.assertEqual(fee_request_payload["Amount"], 0.5)
         self.assertEqual(fee_request_payload["BeneficiaryAccountNumber"], "GE11BG0000000611915509")
         created_withdrawal = WithdrawalRequest.objects.get(id=created_withdrawal_id)
@@ -2981,13 +3005,14 @@ class FleetScopedBogPayoutApiTests(APITestCase):
         self.assertEqual(submit_response.data["status"], "processing")
         payout = BogPayout.objects.get(id=submit_response.data["id"])
         self.assertEqual(payout.connection_id, self.owner_connection.id)
-        self.assertEqual(mocked_request.call_count, 2)
+        self.assertEqual(mocked_request.call_count, 3)
 
     @patch("integrations.services._bog_request")
     @patch("integrations.services._bog_missing_payout_env_vars")
     def test_operator_can_refresh_fleet_payout_statuses(self, mocked_missing, mocked_request):
         mocked_missing.return_value = []
         mocked_request.side_effect = [
+            _bog_balance_response(),
             {
                 "ok": True,
                 "http_status": 200,

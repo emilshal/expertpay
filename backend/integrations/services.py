@@ -54,6 +54,14 @@ from .models import (
 User = get_user_model()
 
 
+class BogPayoutPreflightError(ValueError):
+    """Raised when a payout should not be sent to BoG yet."""
+
+
+class BogInsufficientFundsError(BogPayoutPreflightError):
+    pass
+
+
 def _format_money(value: Decimal | str | int | float) -> str:
     return f"{Decimal(str(value)).quantize(Decimal('0.01'))}"
 
@@ -1024,6 +1032,40 @@ def _extract_bog_document_result(response: dict):
         "result_code": first_item.get("ResultCode"),
         "match_score": first_item.get("Match"),
     }
+
+
+def get_bog_source_account_balance(*, connection: ProviderConnection, currency: str = "GEL"):
+    source_account_number = _normalize_bog_account_number(settings.BOG_SOURCE_ACCOUNT_NUMBER)
+    if not source_account_number:
+        raise ValueError("Missing BoG setting: BOG_SOURCE_ACCOUNT_NUMBER")
+
+    response = _bog_request(
+        connection=connection,
+        method="GET",
+        endpoint=f"/accounts/{source_account_number}/{currency}/false",
+    )
+    body = response.get("body") if isinstance(response.get("body"), dict) else {}
+    if not response.get("ok"):
+        raise BogPayoutPreflightError(
+            f"Could not verify BoG source account balance (HTTP {response.get('http_status') or 'n/a'})."
+        )
+    return {
+        "available_balance": _bog_decimal(body.get("AvailableBalance")),
+        "current_balance": _bog_decimal(body.get("CurrentBalance")),
+        "response": response,
+    }
+
+
+def _verify_bog_source_balance_for_withdrawal(*, connection: ProviderConnection, withdrawal: WithdrawalRequest):
+    balance = get_bog_source_account_balance(connection=connection, currency=withdrawal.currency)
+    available_balance = balance["available_balance"].quantize(Decimal("0.01"))
+    required_amount = (withdrawal.amount + withdrawal.fee_amount).quantize(Decimal("0.01"))
+    if available_balance < required_amount:
+        raise BogInsufficientFundsError(
+            "Insufficient funds in the BoG source account for this withdrawal. "
+            f"Available {available_balance} {withdrawal.currency}, required {required_amount} {withdrawal.currency}."
+        )
+    return balance
 
 
 def _build_bog_document_payload(*, withdrawal: WithdrawalRequest):
@@ -2286,6 +2328,17 @@ def submit_withdrawal_to_bog(*, connection: ProviderConnection, withdrawal: With
     missing = _bog_missing_payout_env_vars()
     if missing:
         raise ValueError(f"Missing BoG settings: {', '.join(missing)}")
+
+    try:
+        _verify_bog_source_balance_for_withdrawal(connection=connection, withdrawal=withdrawal)
+    except BogPayoutPreflightError:
+        _reverse_withdrawal_to_wallet(
+            withdrawal=withdrawal,
+            reason="BoG payout preflight failed, amount returned to wallet",
+            idempotency_key=f"bog:preflight:reversal:{withdrawal.id}",
+            created_by=connection.user,
+        )
+        raise
 
     request_payload, unique_id = _build_bog_document_payload(withdrawal=withdrawal)
     response = _bog_request(
