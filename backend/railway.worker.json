@@ -1,6 +1,6 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
   "deploy": {
-    "startCommand": "sh -c 'python manage.py attach_yandex_env_to_fleet \"New Taxi\" --owner-phone 577775892 || true; python manage.py attach_bog_env_to_fleet \"New Taxi\" --owner-phone 577775892 || true; while true; do python manage.py import_yandex_driver_balance \"New Taxi\" 577775892 || true; python manage.py run_integration_sync_jobs --job bog_deposits --fleet-name \"New Taxi\" || true; sleep 10; done'"
+    "startCommand": "sh -c 'python manage.py attach_yandex_env_to_fleet \"New Taxi\" --owner-phone 577775892 || true; python manage.py attach_bog_env_to_fleet \"New Taxi\" --owner-phone 577775892 || true; while true; do python manage.py import_yandex_driver_balance \"New Taxi\" 577775892 || true; python manage.py run_integration_sync_jobs --job bog_deposits --fleet-name \"New Taxi\" || true; python manage.py submit_pending_bog_payouts --fleet-name \"New Taxi\" || true; python manage.py run_integration_sync_jobs --job bog_payouts --fleet-name \"New Taxi\" || true; sleep 10; done'"
   }
 }

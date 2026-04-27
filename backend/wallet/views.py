@@ -1,5 +1,6 @@
-from decimal import Decimal
 from datetime import timedelta
+from decimal import Decimal
+import logging
 
 from django.conf import settings
 from django.db import transaction as db_transaction
@@ -25,7 +26,7 @@ from ledger.services import (
 )
 from payments.models import InternalTransfer
 from integrations.models import ProviderConnection, YandexTransactionRecord
-from integrations.services import sync_bog_deposits
+from integrations.services import submit_withdrawal_to_bog, sync_bog_deposits
 from .models import BankAccount, Deposit, FleetRatingPenalty, IncomingBankTransfer, Wallet, WithdrawalRequest
 from .serializers import (
     AdminNetworkSummarySerializer,
@@ -46,6 +47,9 @@ from .serializers import (
     WithdrawalStatusUpdateSerializer,
 )
 from .services import build_fleet_deposit_reference, complete_fleet_bank_deposit
+
+
+logger = logging.getLogger(__name__)
 
 
 def _transaction_kind(entry_type):
@@ -452,6 +456,23 @@ class WithdrawalCreateView(APIView):
 
                 wallet.balance = current_balance - amount - fee_amount
                 wallet.save(update_fields=["balance", "updated_at"])
+
+        if withdrawal.fleet_id:
+            connection = _get_active_fleet_bog_connection(fleet=withdrawal.fleet)
+            if connection is not None:
+                try:
+                    submit_withdrawal_to_bog(connection=connection, withdrawal=withdrawal)
+                except Exception as exc:
+                    logger.exception("Automatic BoG payout submission failed for withdrawal %s", withdrawal.id)
+                    log_audit(
+                        user=request.user,
+                        action="withdrawal_bog_auto_submit_failed",
+                        resource_type="withdrawal",
+                        resource_id=withdrawal.id,
+                        request_id=request_id,
+                        ip_address=request.META.get("REMOTE_ADDR"),
+                        metadata={"detail": str(exc)},
+                    )
 
         response_payload = WithdrawalSerializer(withdrawal).data
         finalize_idempotent_request(idempotency_record, status_code=201, response_body=response_payload)

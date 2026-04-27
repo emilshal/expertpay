@@ -5,7 +5,6 @@ import {
   connectBankSimulator,
   requestBogPayoutOtp,
   signBogPayout,
-  submitBogPayout,
   submitBankSimulatorPayout,
   syncAllBogPayoutStatuses,
   syncBogPayoutStatus,
@@ -146,7 +145,7 @@ export default function PayoutsPage() {
                   <div className="txSub">{pick("Amount", "თანხა")}: {item.amount} {item.currency}</div>
                   <div className="txSub">{pick("Driver payout status", "მძღოლის გატანის სტატუსი")}: {humanStatus(item.status)}</div>
                   <div className="txSub">{pick("Driver fee", "მძღოლის საკომისიო")}: {Number(item.fee_amount || 0).toFixed(2)} {item.currency}</div>
-                  {bogPayout ? <div className="txSub">{pick("BoG transfer status", "BoG გადარიცხვის სტატუსი")}: {humanStatus(bogPayout.status)}</div> : <div className="txSub">{pick("Not yet sent to BoG", "BoG-ში ჯერ არ გაგზავნილა")}</div>}
+                  {bogPayout ? <div className="txSub">{pick("BoG transfer status", "BoG გადარიცხვის სტატუსი")}: {humanStatus(bogPayout.status)}</div> : <div className="txSub">{pick("Waiting for automatic BoG submission", "ელოდება BoG-ში ავტომატურ გაგზავნას")}</div>}
                   {bogPayout?.provider_status ? (
                     <div className="txSub">{pick("BoG document state", "BoG დოკუმენტის სტატუსი")}: {humanBogProviderStatus(bogPayout.provider_status)}</div>
                   ) : null}
@@ -157,18 +156,7 @@ export default function PayoutsPage() {
                 </div>
                 <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "flex-end" }}>
                   {!bogPayout ? (
-                    <button
-                      className="btn btnSoft"
-                      type="button"
-                      onClick={() =>
-                        void run(async () => {
-                          await submitBogPayout(item.id);
-                          setMessage(pick(`Submitted withdrawal #${item.id} to Bank of Georgia.`, `გატანა #${item.id} გაგზავნილია Bank of Georgia-ში.`));
-                        })
-                      }
-                    >
-                      {pick("Send to BoG", "BoG-ში გაგზავნა")}
-                    </button>
+                    <span className="txSub">{pick("Auto-send queued", "ავტომატური გაგზავნა რიგშია")}</span>
                   ) : (
                     <>
                       <button
