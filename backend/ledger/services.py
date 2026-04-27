@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.db import IntegrityError, transaction
 from django.db.models import Sum
 
 from .models import LedgerAccount, LedgerEntry
@@ -113,17 +114,28 @@ def create_ledger_entry(
     metadata=None,
     idempotency_key=None,
 ):
-    return LedgerEntry.objects.create(
-        account=account,
-        amount=amount,
-        currency=currency or account.currency,
-        entry_type=entry_type,
-        created_by=created_by,
-        reference_type=reference_type,
-        reference_id=reference_id,
-        metadata=metadata or {},
-        idempotency_key=idempotency_key,
-    )
+    payload = {
+        "account": account,
+        "amount": amount,
+        "currency": currency or account.currency,
+        "entry_type": entry_type,
+        "created_by": created_by,
+        "reference_type": reference_type,
+        "reference_id": reference_id,
+        "metadata": metadata or {},
+        "idempotency_key": idempotency_key,
+    }
+    if not idempotency_key:
+        return LedgerEntry.objects.create(**payload)
+
+    try:
+        with transaction.atomic():
+            return LedgerEntry.objects.create(**payload)
+    except IntegrityError:
+        existing = LedgerEntry.objects.filter(idempotency_key=idempotency_key).first()
+        if existing is not None:
+            return existing
+        raise
 
 
 def record_fleet_reserve_deposit(
