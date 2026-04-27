@@ -1031,9 +1031,8 @@ def _build_bog_document_payload(*, withdrawal: WithdrawalRequest):
     beneficiary_bank_code = _infer_bog_bank_code(bank_account.bank_name)
     if not beneficiary_bank_code:
         raise ValueError("Unsupported bank for automatic BoG payout submission.")
-    if not bank_account.beneficiary_inn:
-        raise ValueError("Bank account is missing beneficiary ID number.")
 
+    beneficiary_inn = (bank_account.beneficiary_inn or "").strip()
     unique_id = str(uuid.uuid4())
     dispatch_type = "BULK" if withdrawal.amount <= Decimal("10000.00") else "MT103"
     document_no = f"{settings.BOG_DOCUMENT_PREFIX}{withdrawal.id}"[:16]
@@ -1051,8 +1050,8 @@ def _build_bog_document_payload(*, withdrawal: WithdrawalRequest):
             "SourceAccountNumber": settings.BOG_SOURCE_ACCOUNT_NUMBER,
             "BeneficiaryAccountNumber": bank_account.account_number,
             "BeneficiaryBankCode": beneficiary_bank_code,
-            "BeneficiaryInn": bank_account.beneficiary_inn,
-            "CheckInn": beneficiary_bank_code == "BAGAGE22",
+            "BeneficiaryInn": beneficiary_inn,
+            "CheckInn": bool(beneficiary_inn) and beneficiary_bank_code == "BAGAGE22",
             "BeneficiaryName": bank_account.beneficiary_name,
             "AdditionalInformation": withdrawal.note or "",
         }

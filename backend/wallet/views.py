@@ -343,11 +343,6 @@ class WithdrawalCreateView(APIView):
             finalize_idempotent_request(idempotency_record, status_code=404, response_body=error_payload)
             return Response(error_payload, status=status.HTTP_404_NOT_FOUND)
 
-        if not bank_account.beneficiary_inn.strip():
-            error_payload = {"detail": "Bank account is missing beneficiary ID number."}
-            finalize_idempotent_request(idempotency_record, status_code=400, response_body=error_payload)
-            return Response(error_payload, status=status.HTTP_400_BAD_REQUEST)
-
         if amount <= Decimal("0"):
             error_payload = {"detail": "Amount must be greater than zero."}
             finalize_idempotent_request(idempotency_record, status_code=400, response_body=error_payload)
@@ -527,24 +522,6 @@ class WithdrawalCreateView(APIView):
                         )
                 except Exception as exc:
                     logger.exception("Automatic BoG payout submission failed for withdrawal %s", withdrawal.id)
-                    try:
-                        from integrations.services import _reverse_withdrawal_to_wallet
-
-                        _reverse_withdrawal_to_wallet(
-                            withdrawal=withdrawal,
-                            reason=f"BoG payout document was not created: {exc}",
-                            idempotency_key=f"bog:auto-submit:reversal:{withdrawal.id}",
-                            created_by=request.user,
-                        )
-                        withdrawal.refresh_from_db()
-                    except Exception as reversal_exc:
-                        logger.exception(
-                            "Automatic withdrawal reversal failed for withdrawal %s after BoG submission error",
-                            withdrawal.id,
-                        )
-                        reversal_detail = str(reversal_exc)
-                    else:
-                        reversal_detail = "Withdrawal hold was reversed."
                     log_audit(
                         user=request.user,
                         action="withdrawal_bog_auto_submit_failed",
@@ -552,7 +529,7 @@ class WithdrawalCreateView(APIView):
                         resource_id=withdrawal.id,
                         request_id=request_id,
                         ip_address=request.META.get("REMOTE_ADDR"),
-                        metadata={"detail": str(exc), "reversal_detail": reversal_detail},
+                        metadata={"detail": str(exc), "reversal_detail": "No automatic reversal; withdrawal remains queued."},
                     )
 
         response_payload = WithdrawalSerializer(withdrawal).data

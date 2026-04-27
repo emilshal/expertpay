@@ -49,9 +49,6 @@ function friendlyWithdrawalError(error: unknown, pick: PickFn) {
   if (message.includes("Only Bank of Georgia accounts are allowed right now")) {
     return pick("Only Bank of Georgia accounts with GE..BG.. are allowed right now.", "ახლა დაშვებულია მხოლოდ Bank of Georgia-ს ანგარიშები GE..BG.. ფორმატით.");
   }
-  if (message.includes("Bank account is missing beneficiary ID number")) {
-    return pick("Enter the beneficiary personal ID number before withdrawing.", "გატანამდე შეიყვანეთ მიმღების პირადი ნომერი.");
-  }
   return message;
 }
 
@@ -369,11 +366,9 @@ function WithdrawModal({
   const previousFee = 1;
   const savedBogAccount =
     bankAccounts.find((item) => item.bank_name.toLowerCase() === "bank of georgia") ?? null;
-  const usableSavedBogAccount = savedBogAccount?.beneficiary_inn?.trim() ? savedBogAccount : null;
-  const [savedBankId, setSavedBankId] = useState<number | null>(usableSavedBogAccount?.id ?? null);
+  const [savedBankId, setSavedBankId] = useState<number | null>(savedBogAccount?.id ?? null);
   const [accountNumber, setAccountNumber] = useState(savedBogAccount?.account_number ?? "");
   const [beneficiaryName, setBeneficiaryName] = useState(savedBogAccount?.beneficiary_name ?? "");
-  const [beneficiaryInn, setBeneficiaryInn] = useState(savedBogAccount?.beneficiary_inn ?? "");
   const [amount, setAmount] = useState(() => prefilledWithdrawalAmount(availableBalance));
   const [loading, setLoading] = useState(false);
   const loadingRef = useRef(false);
@@ -405,9 +400,6 @@ function WithdrawModal({
       if (!isBogIban(accountNumber)) {
         throw new Error("Only Bank of Georgia accounts are allowed right now.");
       }
-      if (!beneficiaryInn.trim()) {
-        throw new Error("Bank account is missing beneficiary ID number.");
-      }
       let bankId: number;
       if (savedBankId) {
         bankId = savedBankId;
@@ -415,8 +407,7 @@ function WithdrawModal({
         const newAccount = await createBankAccount({
           bank_name: "Bank of Georgia",
           account_number: normalizeIban(accountNumber),
-          beneficiary_name: beneficiaryName,
-          beneficiary_inn: beneficiaryInn
+          beneficiary_name: beneficiaryName
         });
         bankId = newAccount.id;
         setSavedBankId(newAccount.id);
@@ -538,19 +529,6 @@ function WithdrawModal({
                 readOnly={Boolean(savedBankId)}
               />
             </label>
-
-            {!savedBankId ? (
-              <label className="transferField">
-                <span className="transferLabel">{pick("Beneficiary ID number", "მიმღების პირადი ნომერი")}</span>
-                <input
-                  className="transferInput"
-                  type="text"
-                  placeholder={pick("Personal ID", "პირადი ნომერი")}
-                  value={beneficiaryInn}
-                  onChange={(event) => setBeneficiaryInn(event.target.value)}
-                />
-              </label>
-            ) : null}
 
             {savedBankId ? (
               <p className="statusHint">

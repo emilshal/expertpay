@@ -18,16 +18,6 @@ class BankAccountSerializer(serializers.ModelSerializer):
         fields = ("id", "bank_name", "account_number", "beneficiary_name", "beneficiary_inn", "is_active", "created_at")
         read_only_fields = ("id", "is_active", "created_at")
 
-    def validate(self, attrs):
-        bank_name = str(attrs.get("bank_name") or "").strip().lower()
-        account_number = str(attrs.get("account_number") or "").strip().upper()
-        beneficiary_inn = str(attrs.get("beneficiary_inn") or "").strip()
-        is_bog_account = bank_name in {"bank of georgia", "bog"} or account_number[4:6] == "BG"
-        if is_bog_account and not beneficiary_inn:
-            raise serializers.ValidationError({"beneficiary_inn": "Beneficiary ID number is required."})
-        attrs["beneficiary_inn"] = beneficiary_inn
-        return attrs
-
 
 class TransactionFeedSerializer(serializers.Serializer):
     id = serializers.CharField()
