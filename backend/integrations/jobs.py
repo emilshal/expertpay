@@ -19,9 +19,9 @@ def _filtered_connections(*, provider, user_id=None, fleet_name=None, connection
         queryset = queryset.filter(user_id=user_id)
     if fleet_name:
         queryset = queryset.filter(
-            Q(fleet__name=fleet_name)
+            Q(fleet__name__iexact=fleet_name)
             | Q(
-                user__fleet_phone_bindings__fleet__name=fleet_name,
+                user__fleet_phone_bindings__fleet__name__iexact=fleet_name,
                 user__fleet_phone_bindings__is_active=True,
             )
         )
