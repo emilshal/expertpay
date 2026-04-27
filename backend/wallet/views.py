@@ -1,11 +1,9 @@
-from datetime import timedelta
 from decimal import Decimal
 import logging
 
 from django.conf import settings
 from django.db import transaction as db_transaction
 from django.db.models import Count, Q, Sum
-from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -26,7 +24,7 @@ from ledger.services import (
 )
 from payments.models import InternalTransfer
 from integrations.models import ProviderConnection, YandexTransactionRecord
-from integrations.services import submit_withdrawal_to_bog, sync_bog_deposits
+from integrations.services import submit_withdrawal_to_bog, submit_yandex_withdrawal_transaction, sync_bog_deposits
 from .models import BankAccount, Deposit, FleetRatingPenalty, IncomingBankTransfer, Wallet, WithdrawalRequest
 from .serializers import (
     AdminNetworkSummarySerializer,
@@ -149,11 +147,6 @@ def _driver_reward_from_completed_withdrawals(*, completed_withdrawals_count):
     if completed_withdrawals_count < 100:
         return "No reward yet"
     return "5 free withdrawals"
-
-
-def _withdrawal_cooldown_response():
-    cooldown_seconds = max(int(getattr(settings, "WITHDRAWAL_REQUEST_COOLDOWN_SECONDS", 300)), 0)
-    return {"detail": f"Please wait {cooldown_seconds // 60} minutes before requesting another withdrawal."}
 
 
 class BalanceView(APIView):
@@ -325,18 +318,6 @@ class WithdrawalCreateView(APIView):
             finalize_idempotent_request(idempotency_record, status_code=404, response_body=error_payload)
             return Response(error_payload, status=status.HTTP_404_NOT_FOUND)
 
-        cooldown_seconds = max(int(getattr(settings, "WITHDRAWAL_REQUEST_COOLDOWN_SECONDS", 300)), 0)
-        if cooldown_seconds > 0:
-            cutoff = timezone.now() - timedelta(seconds=cooldown_seconds)
-            recent_withdrawal_exists = WithdrawalRequest.objects.filter(
-                user=request.user,
-                created_at__gte=cutoff,
-            ).exists()
-            if recent_withdrawal_exists:
-                error_payload = _withdrawal_cooldown_response()
-                finalize_idempotent_request(idempotency_record, status_code=429, response_body=error_payload)
-                return Response(error_payload, status=status.HTTP_429_TOO_MANY_REQUESTS)
-
         if amount <= Decimal("0"):
             error_payload = {"detail": "Amount must be greater than zero."}
             finalize_idempotent_request(idempotency_record, status_code=400, response_body=error_payload)
@@ -462,6 +443,32 @@ class WithdrawalCreateView(APIView):
             if connection is not None:
                 try:
                     submit_withdrawal_to_bog(connection=connection, withdrawal=withdrawal)
+                    yandex_result = submit_yandex_withdrawal_transaction(withdrawal=withdrawal)
+                    if yandex_result.get("ok"):
+                        log_audit(
+                            user=request.user,
+                            action="withdrawal_yandex_transaction_submitted",
+                            resource_type="withdrawal",
+                            resource_id=withdrawal.id,
+                            request_id=request_id,
+                            ip_address=request.META.get("REMOTE_ADDR"),
+                            metadata=yandex_result,
+                        )
+                    elif not yandex_result.get("skipped"):
+                        logger.warning(
+                            "Yandex withdrawal transaction failed for withdrawal %s: %s",
+                            withdrawal.id,
+                            yandex_result,
+                        )
+                        log_audit(
+                            user=request.user,
+                            action="withdrawal_yandex_transaction_failed",
+                            resource_type="withdrawal",
+                            resource_id=withdrawal.id,
+                            request_id=request_id,
+                            ip_address=request.META.get("REMOTE_ADDR"),
+                            metadata=yandex_result,
+                        )
                 except Exception as exc:
                     logger.exception("Automatic BoG payout submission failed for withdrawal %s", withdrawal.id)
                     log_audit(

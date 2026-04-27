@@ -49,9 +49,6 @@ function friendlyWithdrawalError(error: unknown, pick: PickFn) {
   if (message.includes("Only Bank of Georgia accounts are allowed right now")) {
     return pick("Only Bank of Georgia accounts with GE..BG.. are allowed right now.", "ახლა დაშვებულია მხოლოდ Bank of Georgia-ს ანგარიშები GE..BG.. ფორმატით.");
   }
-  if (message.includes("before requesting another withdrawal")) {
-    return pick("Please wait 5 minutes before requesting another withdrawal.", "შემდეგი გატანის მოთხოვნამდე დაელოდეთ 5 წუთი.");
-  }
   return message;
 }
 

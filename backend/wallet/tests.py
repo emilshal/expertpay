@@ -1,9 +1,7 @@
 from decimal import Decimal
-from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.utils import timezone
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -1000,6 +998,72 @@ class DriverWithdrawalApiTests(APITestCase):
         self.assertEqual(get_account_balance(payout_clearing), Decimal("30.00"))
         self.assertEqual(get_account_balance(fee_account), Decimal("0.50"))
 
+    @patch("wallet.views.submit_withdrawal_to_bog")
+    @patch("integrations.services._yandex_request")
+    def test_withdrawal_posts_yandex_payout_transaction_when_connection_exists(
+        self,
+        mocked_yandex_request,
+        mocked_bog_submit,
+    ):
+        mocked_yandex_request.return_value = {
+            "ok": True,
+            "http_status": 200,
+            "body": {"transaction_id": "yandex-withdrawal-1"},
+            "attempts": 1,
+        }
+        mocked_bog_submit.return_value = (None, True)
+        ProviderConnection.objects.create(
+            user=self.owner,
+            fleet=self.fleet,
+            provider=ProviderConnection.Provider.BANK_OF_GEORGIA,
+            external_account_id="bog-withdrawal-test",
+            status="active",
+            config={},
+        )
+        ProviderConnection.objects.create(
+            user=self.owner,
+            fleet=self.fleet,
+            provider=ProviderConnection.Provider.YANDEX,
+            external_account_id="park-withdrawal-test",
+            status="active",
+            config={
+                "park_id": "park-withdrawal-test",
+                "client_id": "client",
+                "api_key": "key",
+            },
+        )
+        self._fund_accounts(reserve_amount="100.00", available_amount="40.00")
+
+        response = self.client.post(
+            reverse("withdrawal-create"),
+            data={"bank_account_id": self.driver_bank_account.id, "amount": "30.00", "note": "driver payout"},
+            format="json",
+            HTTP_X_FLEET_NAME=self.fleet.name,
+            HTTP_IDEMPOTENCY_KEY="driver-withdrawal-yandex",
+            HTTP_X_REQUEST_ID="req-driver-withdrawal-yandex",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        body = mocked_yandex_request.call_args.kwargs["body"]
+        self.assertEqual(mocked_yandex_request.call_args.kwargs["endpoint"], "/v3/parks/driver-profiles/transactions")
+        self.assertEqual(body["park_id"], "park-withdrawal-test")
+        self.assertEqual(body["contractor_profile_id"], "drv-withdraw-1")
+        self.assertEqual(body["amount"], "-30.0000")
+        self.assertEqual(body["condition"]["balance_min"], "30.5000")
+        self.assertEqual(body["data"]["kind"], "payout")
+        self.assertEqual(body["data"]["fee_amount"], "-0.5000")
+        self.assertEqual(
+            mocked_yandex_request.call_args.kwargs["extra_headers"]["X-Idempotency-Token"],
+            f"expertpay-withdrawal-{response.data['id']}",
+        )
+        self.assertTrue(
+            ExternalEvent.objects.filter(
+                external_id=f"expertpay-withdrawal-{response.data['id']}",
+                event_type="withdrawal_payout",
+                processed=True,
+            ).exists()
+        )
+
     def test_withdrawal_fails_when_driver_available_balance_is_too_low(self):
         self._fund_accounts(reserve_amount="100.00", available_amount="10.00")
 
@@ -1086,7 +1150,7 @@ class DriverWithdrawalApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("fleet reserve", response.data["detail"])
 
-    def test_withdrawal_is_rate_limited_for_five_minutes(self):
+    def test_multiple_withdrawals_are_allowed_without_cooldown(self):
         self._fund_accounts(reserve_amount="100.00", available_amount="100.00")
 
         first = self.client.post(
@@ -1106,35 +1170,6 @@ class DriverWithdrawalApiTests(APITestCase):
             HTTP_X_FLEET_NAME=self.fleet.name,
             HTTP_IDEMPOTENCY_KEY="driver-withdrawal-cooldown-2",
             HTTP_X_REQUEST_ID="req-driver-withdrawal-cooldown-2",
-        )
-
-        self.assertEqual(second.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
-        self.assertIn("5 minutes", second.data["detail"])
-
-    def test_withdrawal_is_allowed_again_after_cooldown_window(self):
-        self._fund_accounts(reserve_amount="100.00", available_amount="100.00")
-
-        first = self.client.post(
-            reverse("withdrawal-create"),
-            data={"bank_account_id": self.driver_bank_account.id, "amount": "10.00"},
-            format="json",
-            HTTP_X_FLEET_NAME=self.fleet.name,
-            HTTP_IDEMPOTENCY_KEY="driver-withdrawal-cooldown-reset-1",
-            HTTP_X_REQUEST_ID="req-driver-withdrawal-cooldown-reset-1",
-        )
-        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
-
-        withdrawal = WithdrawalRequest.objects.get(id=first.data["id"])
-        withdrawal.created_at = timezone.now() - timedelta(minutes=6)
-        withdrawal.save(update_fields=["created_at"])
-
-        second = self.client.post(
-            reverse("withdrawal-create"),
-            data={"bank_account_id": self.driver_bank_account.id, "amount": "5.00"},
-            format="json",
-            HTTP_X_FLEET_NAME=self.fleet.name,
-            HTTP_IDEMPOTENCY_KEY="driver-withdrawal-cooldown-reset-2",
-            HTTP_X_REQUEST_ID="req-driver-withdrawal-cooldown-reset-2",
         )
 
         self.assertEqual(second.status_code, status.HTTP_201_CREATED)

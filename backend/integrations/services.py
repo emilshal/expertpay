@@ -1112,20 +1112,24 @@ def _yandex_request(
     park_id: str | None = None,
     client_id: str | None = None,
     api_key: str | None = None,
+    extra_headers: dict | None = None,
 ):
     query_string = f"?{urlencode(query)}" if query else ""
     url = f"{settings.YANDEX_BASE_URL}{endpoint}{query_string}"
     data = json.dumps(body).encode("utf-8") if body is not None else None
+    headers = {
+        "X-Client-ID": client_id or settings.YANDEX_CLIENT_ID,
+        "X-API-Key": api_key or settings.YANDEX_API_KEY,
+        "Accept-Language": "en",
+        "Content-Type": "application/json",
+    }
+    if extra_headers:
+        headers.update(extra_headers)
     request = Request(
         url=url,
         method=method,
         data=data,
-        headers={
-            "X-Client-ID": client_id or settings.YANDEX_CLIENT_ID,
-            "X-API-Key": api_key or settings.YANDEX_API_KEY,
-            "Accept-Language": "en",
-            "Content-Type": "application/json",
-        },
+        headers=headers,
     )
 
     max_attempts = max(1, int(getattr(settings, "YANDEX_MAX_RETRIES", 3)))
@@ -1492,6 +1496,151 @@ def _normalize_transaction_payload(item: dict):
         "direction": direction,
         "event_type": item.get("event_type") or "earning",
         "raw": item,
+    }
+
+
+def _get_active_yandex_connection_for_fleet(*, fleet: Fleet):
+    return (
+        ProviderConnection.objects.filter(
+            fleet=fleet,
+            provider=ProviderConnection.Provider.YANDEX,
+            status="active",
+        )
+        .order_by("-created_at", "id")
+        .first()
+    )
+
+
+def _masked_account_requisites(account_number: str):
+    normalized = _normalize_bog_account_number(account_number)
+    if len(normalized) <= 4:
+        return "****"
+    return f"****{normalized[-4:]}"
+
+
+def _build_yandex_withdrawal_transaction_payload(*, withdrawal: WithdrawalRequest, park_id: str):
+    membership = (
+        DriverFleetMembership.objects.filter(
+            user=withdrawal.user,
+            fleet=withdrawal.fleet,
+            is_active=True,
+        )
+        .exclude(yandex_external_driver_id__isnull=True)
+        .exclude(yandex_external_driver_id="")
+        .order_by("id")
+        .first()
+    )
+    if membership is None:
+        raise ValueError("Withdrawal driver is not mapped to a Yandex driver profile.")
+
+    gross_amount = (withdrawal.amount + withdrawal.fee_amount).quantize(Decimal("0.0001"))
+    payout_amount = withdrawal.amount.quantize(Decimal("0.0001"))
+    fee_amount = withdrawal.fee_amount.quantize(Decimal("0.0001"))
+    body = {
+        "park_id": park_id,
+        "contractor_profile_id": membership.yandex_external_driver_id,
+        "amount": f"-{payout_amount}",
+        "description": f"ExpertPay withdrawal #{withdrawal.id}",
+        "condition": {
+            "balance_min": f"{gross_amount}",
+        },
+        "version": 1,
+        "data": {
+            "kind": "payout",
+            "fee_amount": f"-{fee_amount}",
+            "bank_fee": "0.0000",
+            "masked_requisites": {
+                "value": _masked_account_requisites(withdrawal.bank_account.account_number),
+                "date": timezone.localdate().isoformat(),
+            },
+        },
+    }
+    return body, membership
+
+
+def submit_yandex_withdrawal_transaction(*, withdrawal: WithdrawalRequest):
+    if not withdrawal.fleet_id:
+        return {"ok": False, "skipped": True, "detail": "Withdrawal is not attached to a fleet."}
+
+    connection = _get_active_yandex_connection_for_fleet(fleet=withdrawal.fleet)
+    if connection is None:
+        return {"ok": False, "skipped": True, "detail": "Fleet does not have an active Yandex connection."}
+
+    existing_event = ExternalEvent.objects.filter(
+        connection=connection,
+        external_id=f"expertpay-withdrawal-{withdrawal.id}",
+        event_type="withdrawal_payout",
+        processed=True,
+    ).first()
+    if existing_event is not None:
+        return {"ok": True, "skipped": True, "detail": "Yandex withdrawal transaction was already submitted."}
+
+    credentials = _yandex_connection_credentials(connection)
+    try:
+        request_payload, membership = _build_yandex_withdrawal_transaction_payload(
+            withdrawal=withdrawal,
+            park_id=credentials["park_id"],
+        )
+    except ValueError as exc:
+        return {"ok": False, "skipped": True, "detail": str(exc)}
+    idempotency_token = f"expertpay-withdrawal-{withdrawal.id}"
+    response = _yandex_request(
+        method="POST",
+        endpoint="/v3/parks/driver-profiles/transactions",
+        body=request_payload,
+        extra_headers={"X-Idempotency-Token": idempotency_token},
+        **credentials,
+    )
+
+    event, _created = ExternalEvent.objects.update_or_create(
+        connection=connection,
+        external_id=idempotency_token,
+        defaults={
+            "event_type": "withdrawal_payout",
+            "processed": bool(response.get("ok")),
+            "payload": {
+                "withdrawal_id": withdrawal.id,
+                "driver_external_id": membership.yandex_external_driver_id,
+                "request": request_payload,
+                "response": response.get("body"),
+                "http_status": response.get("http_status"),
+                "attempts": response.get("attempts"),
+                "submitted_at": timezone.now().isoformat(),
+            },
+        },
+    )
+
+    if response.get("ok"):
+        gross_amount = withdrawal.amount + withdrawal.fee_amount
+        membership.yandex_current_balance = (membership.yandex_current_balance - gross_amount).quantize(
+            Decimal("0.0001")
+        )
+        membership.yandex_balance_currency = withdrawal.currency
+        membership.last_yandex_sync_at = timezone.now()
+        membership.save(
+            update_fields=[
+                "yandex_current_balance",
+                "yandex_balance_currency",
+                "last_yandex_sync_at",
+                "updated_at",
+            ]
+        )
+        return {
+            "ok": True,
+            "skipped": False,
+            "detail": "Yandex withdrawal transaction submitted.",
+            "event_id": event.id,
+            "http_status": response.get("http_status"),
+            "response": response.get("body"),
+        }
+
+    return {
+        "ok": False,
+        "skipped": False,
+        "detail": "Yandex withdrawal transaction failed.",
+        "event_id": event.id,
+        "http_status": response.get("http_status"),
+        "response": response.get("body"),
     }
 
 
