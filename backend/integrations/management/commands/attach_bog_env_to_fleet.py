@@ -4,6 +4,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from accounts.models import Fleet, FleetPhoneBinding
 from integrations.models import ProviderConnection
+from integrations.services import _normalize_bog_account_number, resolve_bog_source_account_number
 
 
 class Command(BaseCommand):
@@ -15,6 +16,11 @@ class Command(BaseCommand):
             "--owner-phone",
             default="",
             help="Owner phone to use as the connection owner. Defaults to the first active owner binding.",
+        )
+        parser.add_argument(
+            "--source-account",
+            default="",
+            help="Optional BoG source account number for this fleet. Overrides env fallback and saves it on the fleet.",
         )
 
     def handle(self, *args, **options):
@@ -57,12 +63,20 @@ class Command(BaseCommand):
                 "BOG_CLIENT_SECRET": settings.BOG_CLIENT_SECRET,
                 "BOG_BASE_URL": settings.BOG_BASE_URL,
                 "BOG_TOKEN_URL": settings.BOG_TOKEN_URL,
-                "BOG_SOURCE_ACCOUNT_NUMBER": settings.BOG_SOURCE_ACCOUNT_NUMBER,
             }.items()
             if not value
         ]
         if missing:
             raise CommandError(f"Missing env vars: {', '.join(missing)}")
+
+        source_account_number = _normalize_bog_account_number(options.get("source_account") or "")
+        source_account_number = source_account_number or resolve_bog_source_account_number(fleet=fleet)
+        if not source_account_number:
+            raise CommandError("Missing fleet.bog_source_account_number or BOG_SOURCE_ACCOUNT_NUMBER.")
+
+        if source_account_number and fleet.bog_source_account_number != source_account_number:
+            fleet.bog_source_account_number = source_account_number
+            fleet.save(update_fields=["bog_source_account_number"])
 
         connection, created = ProviderConnection.objects.update_or_create(
             provider=ProviderConnection.Provider.BANK_OF_GEORGIA,
@@ -73,7 +87,7 @@ class Command(BaseCommand):
                 "status": "active",
                 "config": {
                     "mode": "live",
-                    "source_account_number": settings.BOG_SOURCE_ACCOUNT_NUMBER,
+                    "source_account_number": source_account_number,
                     "fee_account_number": settings.BOG_FEE_ACCOUNT_NUMBER,
                 },
             },

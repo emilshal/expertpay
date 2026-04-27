@@ -94,10 +94,10 @@ def _bog_missing_env_vars():
     return missing
 
 
-def _bog_missing_payout_env_vars():
+def _bog_missing_payout_env_vars(*, connection: ProviderConnection | None = None, fleet: Fleet | None = None):
     missing = _bog_missing_env_vars()
-    if not settings.BOG_SOURCE_ACCOUNT_NUMBER:
-        missing.append("BOG_SOURCE_ACCOUNT_NUMBER")
+    if not resolve_bog_source_account_number(connection=connection, fleet=fleet):
+        missing.append("fleet.bog_source_account_number or BOG_SOURCE_ACCOUNT_NUMBER")
     if not settings.BOG_PAYER_INN:
         missing.append("BOG_PAYER_INN")
     return missing
@@ -585,8 +585,9 @@ def _find_fleet_by_deposit_reference(reference_text: str):
 
 def sync_bog_deposits(*, connection: ProviderConnection, use_statement: bool = False, start_date=None, end_date=None, currency: str = "GEL"):
     missing = _bog_missing_env_vars()
-    if not settings.BOG_SOURCE_ACCOUNT_NUMBER:
-        missing.append("BOG_SOURCE_ACCOUNT_NUMBER")
+    source_account_number = resolve_bog_source_account_number(connection=connection)
+    if not source_account_number:
+        missing.append("fleet.bog_source_account_number or BOG_SOURCE_ACCOUNT_NUMBER")
     if missing:
         return {
             "ok": False,
@@ -604,9 +605,9 @@ def sync_bog_deposits(*, connection: ProviderConnection, use_statement: bool = F
     if use_statement:
         if not start_date or not end_date:
             raise ValueError("Statement sync requires start_date and end_date.")
-        endpoint = f"/statement/{settings.BOG_SOURCE_ACCOUNT_NUMBER}/{currency}/{start_date}/{end_date}"
+        endpoint = f"/statement/{source_account_number}/{currency}/{start_date}/{end_date}"
     else:
-        endpoint = f"/documents/v2/todayactivities/{settings.BOG_SOURCE_ACCOUNT_NUMBER}/{currency}"
+        endpoint = f"/documents/v2/todayactivities/{source_account_number}/{currency}"
 
     response = _bog_request(connection=connection, method="GET", endpoint=endpoint)
     records = _bog_records(response.get("body"))
@@ -648,8 +649,14 @@ def sync_bog_deposits(*, connection: ProviderConnection, use_statement: bool = F
             match_status = IncomingBankTransfer.MatchStatus.IGNORED
             ignored_count += 1
         elif matched_fleet is not None:
-            match_status = IncomingBankTransfer.MatchStatus.MATCHED
-            matched_count += 1
+            if connection.fleet_id and matched_fleet.id != connection.fleet_id:
+                match_status = IncomingBankTransfer.MatchStatus.UNMATCHED
+                unmatched_count += 1
+                matched_fleet = None
+                matched_reference = ""
+            else:
+                match_status = IncomingBankTransfer.MatchStatus.MATCHED
+                matched_count += 1
         else:
             match_status = IncomingBankTransfer.MatchStatus.UNMATCHED
             unmatched_count += 1
@@ -660,7 +667,7 @@ def sync_bog_deposits(*, connection: ProviderConnection, use_statement: bool = F
                 "user": connection.user if matched_fleet is not None else None,
                 "fleet": matched_fleet,
                 "provider": "bog",
-                "account_number": settings.BOG_SOURCE_ACCOUNT_NUMBER,
+                "account_number": source_account_number,
                 "currency": currency,
                 "amount": amount,
                 "reference_text": reference_text,
@@ -675,7 +682,7 @@ def sync_bog_deposits(*, connection: ProviderConnection, use_statement: bool = F
         )
         if not created_transfer:
             transfer.provider = "bog"
-            transfer.account_number = settings.BOG_SOURCE_ACCOUNT_NUMBER
+            transfer.account_number = source_account_number
             transfer.currency = currency
             transfer.amount = amount
             transfer.reference_text = reference_text
@@ -1013,6 +1020,21 @@ def _normalize_bog_account_number(account_number: str):
     return normalized
 
 
+def resolve_bog_source_account_number(*, connection: ProviderConnection | None = None, fleet: Fleet | None = None):
+    candidate_fleet = fleet or (connection.fleet if connection is not None else None)
+    if candidate_fleet is not None:
+        account_number = _normalize_bog_account_number(candidate_fleet.bog_source_account_number)
+        if account_number:
+            return account_number
+
+    if connection is not None and isinstance(connection.config, dict):
+        account_number = _normalize_bog_account_number(connection.config.get("source_account_number") or "")
+        if account_number:
+            return account_number
+
+    return _normalize_bog_account_number(settings.BOG_SOURCE_ACCOUNT_NUMBER)
+
+
 def _infer_bog_bank_code_from_account(account_number: str):
     normalized = _normalize_bog_account_number(account_number)
     bank_token = normalized[4:6] if len(normalized) >= 6 else ""
@@ -1034,10 +1056,10 @@ def _extract_bog_document_result(response: dict):
     }
 
 
-def get_bog_source_account_balance(*, connection: ProviderConnection, currency: str = "GEL"):
-    source_account_number = _normalize_bog_account_number(settings.BOG_SOURCE_ACCOUNT_NUMBER)
+def get_bog_source_account_balance(*, connection: ProviderConnection, currency: str = "GEL", fleet: Fleet | None = None):
+    source_account_number = resolve_bog_source_account_number(connection=connection, fleet=fleet)
     if not source_account_number:
-        raise ValueError("Missing BoG setting: BOG_SOURCE_ACCOUNT_NUMBER")
+        raise ValueError("Missing BoG source account number for this fleet.")
 
     response = _bog_request(
         connection=connection,
@@ -1057,7 +1079,11 @@ def get_bog_source_account_balance(*, connection: ProviderConnection, currency: 
 
 
 def _verify_bog_source_balance_for_withdrawal(*, connection: ProviderConnection, withdrawal: WithdrawalRequest):
-    balance = get_bog_source_account_balance(connection=connection, currency=withdrawal.currency)
+    balance = get_bog_source_account_balance(
+        connection=connection,
+        currency=withdrawal.currency,
+        fleet=withdrawal.fleet,
+    )
     available_balance = balance["available_balance"].quantize(Decimal("0.01"))
     required_amount = (withdrawal.amount + withdrawal.fee_amount).quantize(Decimal("0.01"))
     if available_balance < required_amount:
@@ -1076,30 +1102,54 @@ def build_bog_source_account_reconciliation(*, connection: ProviderConnection, c
     def _sum_ledger_entries(queryset):
         return (queryset.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")).quantize(Decimal("0.01"))
 
+    fleet_filter = Q(account__fleet=connection.fleet) if connection.fleet_id else Q()
+    withdrawal_ids = []
+    if connection.fleet_id:
+        withdrawal_ids = list(
+            WithdrawalRequest.objects.filter(fleet=connection.fleet).values_list("id", flat=True)
+        )
+
     total_fleet_reserves = _sum_ledger_entries(
         LedgerEntry.objects.filter(
+            fleet_filter,
             account__account_type=LedgerAccount.AccountType.FLEET_RESERVE,
             currency=currency,
         )
     )
-    payout_clearing_balance = _sum_ledger_entries(
-        LedgerEntry.objects.filter(
-            account__account_type=LedgerAccount.AccountType.PAYOUT_CLEARING,
-            currency=currency,
-        )
+    payout_clearing_queryset = LedgerEntry.objects.filter(
+        account__account_type=LedgerAccount.AccountType.PAYOUT_CLEARING,
+        currency=currency,
     )
-    platform_fee_balance = _sum_ledger_entries(
-        LedgerEntry.objects.filter(
-            account__account_type=LedgerAccount.AccountType.PLATFORM_FEE,
-            currency=currency,
-        )
+    platform_fee_queryset = LedgerEntry.objects.filter(
+        account__account_type=LedgerAccount.AccountType.PLATFORM_FEE,
+        currency=currency,
     )
-    treasury_balance = _sum_ledger_entries(
-        LedgerEntry.objects.filter(
-            account__account_type=LedgerAccount.AccountType.TREASURY,
-            currency=currency,
-        )
+    treasury_queryset = LedgerEntry.objects.filter(
+        account__account_type=LedgerAccount.AccountType.TREASURY,
+        currency=currency,
     )
+    if connection.fleet_id:
+        withdrawal_reference_ids = [str(item) for item in withdrawal_ids]
+        payout_clearing_queryset = payout_clearing_queryset.filter(
+            reference_type="withdrawal",
+            reference_id__in=withdrawal_reference_ids,
+        )
+        platform_fee_queryset = platform_fee_queryset.filter(
+            reference_type="withdrawal",
+            reference_id__in=withdrawal_reference_ids,
+        )
+        deposit_ids = list(
+            Deposit.objects.filter(fleet=connection.fleet, status=Deposit.Status.COMPLETED).values_list("id", flat=True)
+        )
+        treasury_queryset = treasury_queryset.filter(
+            Q(metadata__fleet_id=connection.fleet_id)
+            | Q(reference_type="deposit", reference_id__in=[str(item) for item in deposit_ids])
+            | Q(reference_type="withdrawal", reference_id__in=withdrawal_reference_ids)
+        )
+
+    payout_clearing_balance = _sum_ledger_entries(payout_clearing_queryset)
+    platform_fee_balance = _sum_ledger_entries(platform_fee_queryset)
+    treasury_balance = _sum_ledger_entries(treasury_queryset)
 
     expected_source_liability = (total_fleet_reserves + payout_clearing_balance).quantize(Decimal("0.01"))
     expected_source_with_unmoved_fees = (expected_source_liability + platform_fee_balance).quantize(Decimal("0.01"))
@@ -1111,7 +1161,9 @@ def build_bog_source_account_reconciliation(*, connection: ProviderConnection, c
         "ok": status == "OK",
         "status": status,
         "currency": currency,
-        "account_number": _normalize_bog_account_number(settings.BOG_SOURCE_ACCOUNT_NUMBER),
+        "fleet_id": connection.fleet_id,
+        "fleet_name": connection.fleet.name if connection.fleet_id else "",
+        "account_number": resolve_bog_source_account_number(connection=connection),
         "available_balance": _format_money(available_balance),
         "current_balance": _format_money(current_balance),
         "expected_source_liability": _format_money(expected_source_liability),
@@ -1135,6 +1187,10 @@ def _build_bog_document_payload(*, withdrawal: WithdrawalRequest):
     if not beneficiary_bank_code:
         raise ValueError("Unsupported bank for automatic BoG payout submission.")
 
+    source_account_number = resolve_bog_source_account_number(fleet=withdrawal.fleet)
+    if not source_account_number:
+        raise ValueError("Missing BoG source account number for this fleet.")
+
     beneficiary_inn = (bank_account.beneficiary_inn or "").strip()
     unique_id = str(uuid.uuid4())
     dispatch_type = "BULK" if withdrawal.amount <= Decimal("10000.00") else "MT103"
@@ -1150,7 +1206,7 @@ def _build_bog_document_payload(*, withdrawal: WithdrawalRequest):
             "UniqueId": unique_id,
             "Amount": float(withdrawal.amount),
             "DocumentNo": document_no,
-            "SourceAccountNumber": settings.BOG_SOURCE_ACCOUNT_NUMBER,
+            "SourceAccountNumber": source_account_number,
             "BeneficiaryAccountNumber": bank_account.account_number,
             "BeneficiaryBankCode": beneficiary_bank_code,
             "BeneficiaryInn": beneficiary_inn,
@@ -1179,6 +1235,10 @@ def _build_bog_fee_transfer_payload(*, withdrawal: WithdrawalRequest):
     if not beneficiary_inn:
         raise ValueError("Missing BoG setting: BOG_FEE_BENEFICIARY_INN")
 
+    source_account_number = resolve_bog_source_account_number(fleet=withdrawal.fleet)
+    if not source_account_number:
+        raise ValueError("Missing BoG source account number for this fleet.")
+
     unique_id = str(uuid.uuid4())
     document_no = f"{settings.BOG_FEE_DOCUMENT_PREFIX}{withdrawal.id}"[:16]
     nomination = (settings.BOG_FEE_NOMINATION or f"ExpertPay withdrawal fee #{withdrawal.id}")[:250]
@@ -1193,7 +1253,7 @@ def _build_bog_fee_transfer_payload(*, withdrawal: WithdrawalRequest):
             "UniqueId": unique_id,
             "Amount": float(fee_amount),
             "DocumentNo": document_no,
-            "SourceAccountNumber": _normalize_bog_account_number(settings.BOG_SOURCE_ACCOUNT_NUMBER),
+            "SourceAccountNumber": source_account_number,
             "BeneficiaryAccountNumber": fee_account_number,
             "BeneficiaryBankCode": beneficiary_bank_code,
             "BeneficiaryInn": beneficiary_inn,
@@ -2386,7 +2446,7 @@ def submit_withdrawal_to_bog(*, connection: ProviderConnection, withdrawal: With
             payout.save(update_fields=["response_payload", "updated_at"])
         return payout, False
 
-    missing = _bog_missing_payout_env_vars()
+    missing = _bog_missing_payout_env_vars(connection=connection, fleet=withdrawal.fleet)
     if missing:
         raise ValueError(f"Missing BoG settings: {', '.join(missing)}")
 

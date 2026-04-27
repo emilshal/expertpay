@@ -1416,6 +1416,33 @@ class ReconciliationReportTests(APITestCase):
         self.assertEqual(report["expected_source_liability"], "100.00")
         self.assertEqual(report["available_delta"], "-20.00")
 
+    @override_settings(BOG_SOURCE_ACCOUNT_NUMBER="GE00BG00000000000001")
+    @patch("integrations.services._bog_request")
+    def test_bog_source_reconciliation_is_scoped_to_connection_fleet_account(self, mocked_request):
+        self.fleet.bog_source_account_number = "GE22BG00000000000022"
+        self.fleet.save(update_fields=["bog_source_account_number"])
+        self.bog_connection.fleet = self.fleet
+        self.bog_connection.save(update_fields=["fleet"])
+        mocked_request.return_value = _bog_balance_response(available="90.00", current="90.00")
+        record_fleet_reserve_deposit(
+            fleet=self.fleet,
+            amount=Decimal("90.00"),
+            created_by=self.owner,
+        )
+        record_fleet_reserve_deposit(
+            fleet=self.other_fleet,
+            amount=Decimal("500.00"),
+            created_by=self.other_owner,
+        )
+
+        report = build_bog_source_account_reconciliation(connection=self.bog_connection)
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["account_number"], "GE22BG00000000000022")
+        self.assertEqual(report["fleet_reserves_total"], "90.00")
+        self.assertEqual(report["expected_source_liability"], "90.00")
+        self.assertEqual(mocked_request.call_args.kwargs["endpoint"], "/accounts/GE22BG00000000000022/GEL/false")
+
     def _create_yandex_event(self, *, external_id: str, driver_external_id: str, amount: str):
         event = ExternalEvent.objects.create(
             connection=self._ensure_owner_yandex_connection(),
@@ -3327,6 +3354,27 @@ class BogDepositSyncServiceTests(APITestCase):
         self.assertEqual(get_account_balance(treasury_account), Decimal("45.50"))
         transfer = IncomingBankTransfer.objects.get(provider_transaction_id="1001")
         self.assertEqual(transfer.raw_payload["_expertpay_sync"]["source"], "activity_poll")
+
+    @patch("integrations.services._bog_request")
+    def test_sync_bog_deposits_uses_fleet_source_account_before_global_fallback(self, mocked_request):
+        self.fleet.bog_source_account_number = "GE11BG00000000000011GEL"
+        self.fleet.save(update_fields=["bog_source_account_number"])
+        self.connection.fleet = self.fleet
+        self.connection.save(update_fields=["fleet"])
+        mocked_request.return_value = {
+            "ok": True,
+            "http_status": 200,
+            "body": {"Records": []},
+        }
+
+        with patch("integrations.services.settings.BOG_SOURCE_ACCOUNT_NUMBER", "GE00BG00000000000001"):
+            result = sync_bog_deposits(connection=self.connection)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            mocked_request.call_args.kwargs["endpoint"],
+            "/documents/v2/todayactivities/GE11BG00000000000011/GEL",
+        )
 
     @patch("integrations.services._bog_request")
     def test_sync_bog_deposits_keeps_unmatched_transfers_for_review(self, mocked_request):

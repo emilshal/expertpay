@@ -6,6 +6,7 @@ from django.utils import timezone
 
 class Fleet(models.Model):
     name = models.CharField(max_length=120, unique=True)
+    bog_source_account_number = models.CharField(max_length=64, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

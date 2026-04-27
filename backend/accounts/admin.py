@@ -5,8 +5,8 @@ from .models import DriverFleetMembership, Fleet, FleetPhoneBinding, LoginCodeCh
 
 @admin.register(Fleet)
 class FleetAdmin(admin.ModelAdmin):
-    list_display = ("id", "name", "created_at")
-    search_fields = ("name",)
+    list_display = ("id", "name", "bog_source_account_number", "created_at")
+    search_fields = ("name", "bog_source_account_number")
 
 
 @admin.register(FleetPhoneBinding)

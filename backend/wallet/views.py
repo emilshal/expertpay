@@ -26,7 +26,12 @@ from ledger.services import (
 )
 from payments.models import InternalTransfer
 from integrations.models import ProviderConnection, YandexTransactionRecord
-from integrations.services import BogPayoutPreflightError, submit_withdrawal_to_bog, sync_bog_deposits
+from integrations.services import (
+    BogPayoutPreflightError,
+    resolve_bog_source_account_number,
+    submit_withdrawal_to_bog,
+    sync_bog_deposits,
+)
 from .models import BankAccount, Deposit, FleetRatingPenalty, IncomingBankTransfer, Wallet, WithdrawalRequest
 from .serializers import (
     AdminNetworkSummarySerializer,
@@ -687,7 +692,8 @@ class DepositInstructionsView(APIView):
         if binding is None:
             return Response({"detail": "An active fleet is required to view deposit instructions."}, status=400)
         currency = "GEL"
-        account_number = (settings.BOG_SOURCE_ACCOUNT_NUMBER or "").strip()
+        connection = _get_active_fleet_bog_connection(fleet=binding.fleet)
+        account_number = resolve_bog_source_account_number(connection=connection, fleet=binding.fleet)
         display_account_number = account_number
         if account_number and not account_number.upper().endswith(currency):
             display_account_number = f"{account_number}{currency}"
