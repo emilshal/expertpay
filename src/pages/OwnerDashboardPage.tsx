@@ -220,6 +220,7 @@ export default function OwnerDashboardPage() {
   const [financeFromDate, setFinanceFromDate] = useState(toDateInputValue(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 30)));
   const [financeToDate, setFinanceToDate] = useState(toDateInputValue(today));
   const [copiedLink, setCopiedLink] = useState(false);
+  const [copiedDepositAccount, setCopiedDepositAccount] = useState(false);
   const [ownerSection, setOwnerSection] = useState<"overview" | "drivers" | "payouts">("overview");
   const [showWithdrawnBreakdown, setShowWithdrawnBreakdown] = useState(false);
   const [openPendingFleetId, setOpenPendingFleetId] = useState<number | null>(null);
@@ -335,6 +336,13 @@ export default function OwnerDashboardPage() {
     await navigator.clipboard.writeText(inviteLink);
     setCopiedLink(true);
     window.setTimeout(() => setCopiedLink(false), 1800);
+  }
+
+  async function handleCopyDepositAccount() {
+    if (!instructions?.account_number || typeof navigator === "undefined" || !navigator.clipboard) return;
+    await navigator.clipboard.writeText(instructions.account_number);
+    setCopiedDepositAccount(true);
+    window.setTimeout(() => setCopiedDepositAccount(false), 1800);
   }
 
   function handleOwnerSectionChange(nextSection: "overview" | "drivers" | "payouts") {
@@ -756,7 +764,12 @@ export default function OwnerDashboardPage() {
               <div className="txMain">
                 <div className="txTitle">{pick("Send funds to this company account", "გადარიცხეთ თანხა ამ კომპანიის ანგარიშზე")}</div>
                 <div className="txSub">{instructions.account_holder_name || pick("Company account", "კომპანიის ანგარიში")}</div>
-                <div className="txSub">{instructions.account_number}</div>
+                <div className="reserveCopyBox ownerDepositCopyBox">
+                  <span>{instructions.account_number}</span>
+                  <button className="btn btnSoft" type="button" onClick={() => void handleCopyDepositAccount()}>
+                    {copiedDepositAccount ? pick("Copied", "დაკოპირდა") : pick("Copy", "კოპირება")}
+                  </button>
+                </div>
               </div>
             </div>
             <div className="txRow" role="listitem">

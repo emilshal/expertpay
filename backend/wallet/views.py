@@ -619,11 +619,16 @@ class DepositInstructionsView(APIView):
         binding = get_request_fleet_binding(user=request.user, request=request)
         if binding is None:
             return Response({"detail": "An active fleet is required to view deposit instructions."}, status=400)
+        currency = "GEL"
+        account_number = (settings.BOG_SOURCE_ACCOUNT_NUMBER or "").strip()
+        display_account_number = account_number
+        if account_number and not account_number.upper().endswith(currency):
+            display_account_number = f"{account_number}{currency}"
         payload = {
             "bank_name": "Bank of Georgia",
             "account_holder_name": settings.BOG_PAYER_NAME or "",
-            "account_number": settings.BOG_SOURCE_ACCOUNT_NUMBER or "",
-            "currency": "GEL",
+            "account_number": display_account_number,
+            "currency": currency,
             "fleet_name": binding.fleet.name,
             "reference_code": build_fleet_deposit_reference(binding.fleet),
             "note": "Send a bank transfer to this account and include the exact fleet reference code.",

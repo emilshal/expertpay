@@ -406,6 +406,10 @@ body::after {
   background: rgba(255, 255, 255, 0.1);
 }
 
+.ownerDepositCopyBox {
+  max-width: 520px;
+}
+
 .mappingRow {
   gap: 14px;
 }
